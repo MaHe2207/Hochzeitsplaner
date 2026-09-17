@@ -34,7 +34,7 @@
       guestSearch: '',
       guestSort: 'name'
     },
-    notes: { sectionId: null, pageId: null, saveState: '' },
+    notes: { sectionId: null, pageId: null, saveState: '', editing: false, expandedSectionIds: [] },
     data: emptyData()
   };
 
@@ -64,13 +64,56 @@
     root.querySelectorAll('*').forEach(el => {
       [...el.attributes].forEach(a => {
         const n = a.name.toLowerCase();
-        const v = a.value.trim().toLowerCase();
+        const v = a.value.trim();
         if (n.startsWith('on')) el.removeAttribute(a.name);
-        if ((n === 'href' || n === 'src') && v.startsWith('javascript:')) el.removeAttribute(a.name);
+        if (n === 'href') {
+          const safeHref = /^(https?:|mailto:|tel:|#|\/)/i.test(v);
+          if (!safeHref) el.removeAttribute(a.name);
+        }
+        if (n === 'src' && /^javascript:/i.test(v)) el.removeAttribute(a.name);
         if (n === 'style' && /(url\s*\(|expression\s*\(|javascript:)/i.test(a.value)) el.removeAttribute('style');
       });
     });
+    root.querySelectorAll('a[href]').forEach(a => {
+      a.setAttribute('target', '_blank');
+      a.setAttribute('rel', 'noopener noreferrer');
+    });
     return root.innerHTML;
+  }
+
+  function injectNotebookStyles() {
+    if (document.getElementById('notebook-v2-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'notebook-v2-styles';
+    style.textContent = `
+      #app .notebook-layout { display:block !important; }
+      #app .notebook-sidebar { position:static !important; width:100%; }
+      #app .notebook-accordion { display:grid; gap:10px; margin-bottom:16px; }
+      #app .notebook-section { border:1px solid var(--line, #e6e8e3); border-radius:16px; background:rgba(255,255,255,.9); overflow:hidden; }
+      #app .notebook-section-head { display:grid; grid-template-columns:auto minmax(0,1fr) auto auto; align-items:center; gap:7px; padding:8px 9px; }
+      #app .notebook-section-toggle { border:0; background:transparent; color:var(--green-900, #17452e); width:34px; height:34px; display:grid; place-items:center; border-radius:9px; }
+      #app .notebook-section-title { border:0; background:transparent; text-align:left; min-width:0; padding:7px 3px; font-weight:700; color:var(--ink, #172019); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      #app .notebook-section-pages { display:grid; gap:5px; padding:0 10px 10px 51px; border-top:1px solid var(--line, #e6e8e3); background:rgba(247,250,246,.7); }
+      #app .notebook-page-row { width:100%; border:0; background:transparent; text-align:left; padding:10px 10px; border-radius:10px; color:#465049; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      #app .notebook-page-row.active { background:var(--green-100, #eef4ef); color:var(--green-900, #17452e); font-weight:700; }
+      #app .notebook-page-row:first-child { margin-top:6px; }
+      #app .notebook-empty-pages { padding:10px 8px 5px; color:var(--muted, #68716b); font-size:12px; }
+      #app .note-reader-card { overflow:hidden; }
+      #app .note-reader-head { display:flex; align-items:center; gap:8px; padding:15px 14px; border-bottom:1px solid var(--line, #e6e8e3); }
+      #app .note-reader-title { flex:1; min-width:0; margin:0; font:600 25px/1.2 Georgia, serif; overflow-wrap:anywhere; }
+      #app .note-view { min-height:220px; padding:18px; line-height:1.65; background:#fff; overflow-wrap:anywhere; }
+      #app .note-view a { color:var(--green-800, #24573c); text-decoration:underline; text-underline-offset:2px; overflow-wrap:anywhere; }
+      #app .note-editor-card { overflow:hidden; }
+      #app .note-title-input { min-width:0; }
+      #app .editor-toolbar { position:static !important; overflow-x:auto; flex-wrap:nowrap !important; -webkit-overflow-scrolling:touch; }
+      #app .editor-toolbar > * { flex:0 0 auto; }
+      #app .notebook-header-actions { display:flex; gap:8px; align-items:center; flex:0 0 auto; }
+      @media (max-width: 699px) {
+        #app .notebook-section-pages { padding-left:18px; }
+        #app .note-view { min-height:180px; }
+      }
+    `;
+    document.head.appendChild(style);
   }
 
   function refreshIcons() {
@@ -427,44 +470,96 @@
 
   function notesView() {
     const d = state.data;
+    const sectionIds = new Set(d.noteSections.map(s => s.id));
+    const pageIds = new Set(d.notePages.map(p => p.id));
+
+    if (state.notes.sectionId && !sectionIds.has(state.notes.sectionId)) state.notes.sectionId = null;
+    if (state.notes.pageId && !pageIds.has(state.notes.pageId)) state.notes.pageId = null;
+
     if (!state.notes.sectionId && d.noteSections[0]) state.notes.sectionId = d.noteSections[0].id;
-    let section = d.noteSections.find(s=>s.id===state.notes.sectionId) || d.noteSections[0] || null;
-    if (section) state.notes.sectionId = section.id;
-    const pages = section ? d.notePages.filter(p=>p.section_id===section.id).sort((a,b)=>a.position-b.position || a.created_at.localeCompare(b.created_at)) : [];
-    if (!state.notes.pageId || !pages.some(p=>p.id===state.notes.pageId)) state.notes.pageId = pages[0]?.id || null;
-    const page = pages.find(p=>p.id===state.notes.pageId) || null;
+    if (!Array.isArray(state.notes.expandedSectionIds)) state.notes.expandedSectionIds = [];
+    if (state.notes.sectionId && !state.notes.expandedSectionIds.includes(state.notes.sectionId)) {
+      state.notes.expandedSectionIds.push(state.notes.sectionId);
+    }
 
-    const sidebar = `
-      <aside class="notebook-sidebar">
-        <div class="flex items-center justify-between gap-8"><strong>Kapitel</strong><button class="icon-btn" style="width:34px;height:34px" data-action="new-note-section"><i data-lucide="folder-plus"></i></button></div>
-        <div class="note-section-tabs mt-8">
-          ${d.noteSections.map(s=>`<button class="note-section-tab ${s.id===section?.id?'active':''}" data-action="select-note-section" data-id="${s.id}">${esc(s.title)}</button>`).join('')}
-        </div>
-        ${section ? `<div class="flex items-center justify-between gap-8 mt-16"><strong>Seiten</strong><button class="icon-btn" style="width:34px;height:34px" data-action="new-note-page" data-section-id="${section.id}"><i data-lucide="file-plus-2"></i></button></div>
-        <div class="note-page-list mt-8">${pages.map(p=>`<button class="note-page-pill ${p.id===page?.id?'active':''}" data-action="select-note-page" data-id="${p.id}">${esc(p.title || 'Neue Seite')}</button>`).join('')}</div>` : ''}
-      </aside>`;
+    const section = d.noteSections.find(s => s.id === state.notes.sectionId) || null;
+    const page = d.notePages.find(p => p.id === state.notes.pageId) || null;
+    if (page && page.section_id !== state.notes.sectionId) state.notes.sectionId = page.section_id;
 
-    const editor = page ? `
-      <section class="card note-editor-card">
-        <div class="flex items-center gap-8" style="padding-right:10px"><input class="note-title-input" id="note-title" value="${attr(page.title)}" aria-label="Seitentitel" /><button class="icon-btn" data-action="delete-note-page" data-id="${page.id}" title="Seite löschen"><i data-lucide="trash-2"></i></button></div>
-        <div class="editor-toolbar">
-          <button class="tool-btn" data-command="bold" title="Fett"><b>B</b></button>
-          <button class="tool-btn" data-command="italic" title="Kursiv"><i>I</i></button>
-          <button class="tool-btn" data-command="underline" title="Unterstrichen"><u>U</u></button>
-          <button class="tool-btn" data-command="insertUnorderedList" title="Aufzählung">•≡</button>
-          <button class="tool-btn" data-command="insertOrderedList" title="Nummerierung">1.</button>
-          <select class="tool-select" data-editor-size title="Schriftgröße"><option value="3">Normal</option><option value="2">Klein</option><option value="4">Groß</option><option value="5">Sehr groß</option></select>
-          <select class="tool-select" data-editor-block title="Absatz"><option value="p">Absatz</option><option value="h1">Titel</option><option value="h2">Überschrift</option><option value="blockquote">Zitat</option></select>
-          <input class="tool-color" type="color" data-editor-color value="#172019" title="Textfarbe" />
-          <button class="tool-btn" data-command="removeFormat" title="Formatierung entfernen">Tx</button>
-        </div>
-        <div class="note-editor" id="note-editor" contenteditable="true" spellcheck="true">${sanitizeHtml(page.content_html)}</div>
-        <div class="note-save-state" id="note-save-state">${esc(state.notes.saveState || 'Synchronisiert')}</div>
-      </section>` : `<div class="empty-state card"><i data-lucide="file-heart"></i><strong>${section?'Noch keine Seite':'Noch kein Kapitel'}</strong><span>${section?'Legt die erste Seite in diesem Kapitel an.':'Legt ein Kapitel wie „Location“, „Trauung“ oder „Ideen“ an.'}</span><div class="mt-16"><button class="btn btn-primary" data-action="${section?'new-note-page':'new-note-section'}" ${section?`data-section-id="${section.id}"`:''}><i data-lucide="plus"></i> ${section?'Neue Seite':'Neues Kapitel'}</button></div></div>`;
+    const sectionList = d.noteSections.map(s => {
+      const isOpen = state.notes.expandedSectionIds.includes(s.id);
+      const isActiveSection = state.notes.sectionId === s.id;
+      const pages = d.notePages
+        .filter(p => p.section_id === s.id)
+        .sort((a,b) => a.position - b.position || a.created_at.localeCompare(b.created_at));
+
+      return `
+        <section class="notebook-section ${isActiveSection ? 'active' : ''}">
+          <div class="notebook-section-head">
+            <button class="notebook-section-toggle" data-action="toggle-note-section" data-id="${s.id}" aria-label="Kapitel ${isOpen ? 'zuklappen' : 'aufklappen'}">
+              <i data-lucide="${isOpen ? 'chevron-down' : 'chevron-right'}"></i>
+            </button>
+            <button class="notebook-section-title" data-action="toggle-note-section" data-id="${s.id}">${esc(s.title)}</button>
+            <button class="icon-btn" style="width:34px;height:34px" data-action="new-note-page" data-section-id="${s.id}" title="Neue Seite"><i data-lucide="file-plus-2"></i></button>
+            <button class="icon-btn" style="width:34px;height:34px" data-action="edit-note-section" data-id="${s.id}" title="Kapitel bearbeiten"><i data-lucide="pencil"></i></button>
+          </div>
+          ${isOpen ? `<div class="notebook-section-pages">
+            ${pages.length ? pages.map(p => `
+              <button class="notebook-page-row ${state.notes.pageId === p.id ? 'active' : ''}" data-action="select-note-page" data-id="${p.id}">
+                ${esc(p.title || 'Neue Seite')}
+              </button>`).join('') : `<div class="notebook-empty-pages">Noch keine Seiten in diesem Kapitel.</div>`}
+          </div>` : ''}
+        </section>`;
+    }).join('');
+
+    let pageArea = '';
+    if (!page) {
+      pageArea = `<div class="empty-state card">
+        <i data-lucide="file-heart"></i>
+        <strong>${d.noteSections.length ? 'Seite auswählen' : 'Noch kein Kapitel'}</strong>
+        <span>${d.noteSections.length ? 'Klappt ein Kapitel auf und tippt auf den Titel einer Seite.' : 'Legt zuerst ein Kapitel an.'}</span>
+      </div>`;
+    } else if (state.notes.editing) {
+      pageArea = `
+        <section class="card note-editor-card">
+          <div class="note-reader-head">
+            <input class="note-title-input" id="note-title" value="${attr(page.title)}" aria-label="Seitentitel" />
+            <button class="icon-btn" data-action="finish-note-edit" title="Bearbeitung beenden"><i data-lucide="check"></i></button>
+            <button class="icon-btn" data-action="delete-note-page" data-id="${page.id}" title="Seite löschen"><i data-lucide="trash-2"></i></button>
+          </div>
+          <div class="editor-toolbar">
+            <button class="tool-btn" data-command="bold" title="Fett"><b>B</b></button>
+            <button class="tool-btn" data-command="italic" title="Kursiv"><i>I</i></button>
+            <button class="tool-btn" data-command="underline" title="Unterstrichen"><u>U</u></button>
+            <button class="tool-btn" data-command="insertUnorderedList" title="Aufzählung">•≡</button>
+            <button class="tool-btn" data-command="insertOrderedList" title="Nummerierung">1.</button>
+            <button class="tool-btn" data-action="insert-note-link" title="Link einfügen"><i data-lucide="link"></i></button>
+            <select class="tool-select" data-editor-size title="Schriftgröße"><option value="3">Normal</option><option value="2">Klein</option><option value="4">Groß</option><option value="5">Sehr groß</option></select>
+            <select class="tool-select" data-editor-block title="Absatz"><option value="p">Absatz</option><option value="h1">Titel</option><option value="h2">Überschrift</option><option value="blockquote">Zitat</option></select>
+            <input class="tool-color" type="color" data-editor-color value="#172019" title="Textfarbe" />
+            <button class="tool-btn" data-command="removeFormat" title="Formatierung entfernen">Tx</button>
+          </div>
+          <div class="note-editor" id="note-editor" contenteditable="true" spellcheck="true">${sanitizeHtml(page.content_html)}</div>
+          <div class="note-save-state" id="note-save-state">${esc(state.notes.saveState || 'Synchronisiert')}</div>
+        </section>`;
+    } else {
+      pageArea = `
+        <section class="card note-reader-card">
+          <div class="note-reader-head">
+            <h2 class="note-reader-title">${esc(page.title || 'Neue Seite')}</h2>
+            <button class="icon-btn" data-action="edit-note-page" data-id="${page.id}" title="Seite bearbeiten"><i data-lucide="pencil"></i></button>
+          </div>
+          <div class="note-view">${page.content_html ? sanitizeHtml(page.content_html) : '<span class="muted">Noch kein Inhalt. Tippt auf den Stift, um diese Seite zu bearbeiten.</span>'}</div>
+        </section>`;
+    }
 
     return `
-      <div class="flex items-center justify-between gap-12"><div><h1 class="page-title">Notizbuch</h1><p class="page-subtitle">Wie OneNote: Kapitel, Seiten und frei formatierbare Inhalte – gemeinsam bearbeitbar.</p></div>${section?`<button class="btn btn-secondary btn-sm" data-action="edit-note-section" data-id="${section.id}"><i data-lucide="pencil"></i></button>`:''}</div>
-      <div class="notebook-layout">${sidebar}<div>${editor}</div></div>`;
+      <div class="flex items-center justify-between gap-12">
+        <div><h1 class="page-title">Notizbuch</h1><p class="page-subtitle">Kapitel aufklappen, Seite auswählen und über den Stift bearbeiten.</p></div>
+        <div class="notebook-header-actions"><button class="btn btn-primary btn-sm" data-action="new-note-section"><i data-lucide="folder-plus"></i> Kapitel</button></div>
+      </div>
+      <div class="notebook-accordion">${sectionList}</div>
+      ${pageArea}`;
   }
 
   function modalHtml() {
@@ -589,6 +684,7 @@
   function closeModal() { state.modal = null; state.modalPayload = null; render(); }
 
   async function init() {
+    injectNotebookStyles();
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
     }
@@ -791,9 +887,66 @@
       }
       else if (action === 'new-note-section') openModal('note-section');
       else if (action === 'edit-note-section') openModal('note-section', {id:el.dataset.id});
-      else if (action === 'select-note-section') { await flushNoteSave(); state.notes.sectionId = el.dataset.id; state.notes.pageId = null; render(); }
-      else if (action === 'new-note-page') await createNotePage(el.dataset.sectionId || state.notes.sectionId);
-      else if (action === 'select-note-page') { await flushNoteSave(); state.notes.pageId = el.dataset.id; render(); }
+      else if (action === 'toggle-note-section') {
+        await flushNoteSave();
+        const id = el.dataset.id;
+        const expanded = Array.isArray(state.notes.expandedSectionIds) ? [...state.notes.expandedSectionIds] : [];
+        const pos = expanded.indexOf(id);
+        if (pos >= 0) expanded.splice(pos, 1); else expanded.push(id);
+        if (state.notes.sectionId !== id) {
+          state.notes.sectionId = id;
+          state.notes.pageId = null;
+          state.notes.editing = false;
+        }
+        state.notes.expandedSectionIds = expanded;
+        render();
+      }
+      else if (action === 'new-note-page') {
+        await flushNoteSave();
+        const sectionId = el.dataset.sectionId || state.notes.sectionId;
+        if (sectionId && !state.notes.expandedSectionIds.includes(sectionId)) state.notes.expandedSectionIds.push(sectionId);
+        await createNotePage(sectionId);
+      }
+      else if (action === 'select-note-page') {
+        await flushNoteSave();
+        const nextPage = state.data.notePages.find(p => p.id === el.dataset.id);
+        state.notes.pageId = el.dataset.id;
+        state.notes.sectionId = nextPage?.section_id || state.notes.sectionId;
+        if (state.notes.sectionId && !state.notes.expandedSectionIds.includes(state.notes.sectionId)) state.notes.expandedSectionIds.push(state.notes.sectionId);
+        state.notes.editing = false;
+        render();
+      }
+      else if (action === 'edit-note-page') {
+        state.notes.pageId = el.dataset.id || state.notes.pageId;
+        state.notes.editing = true;
+        state.notes.saveState = 'Bearbeitung geöffnet';
+        render();
+        setTimeout(() => $('#note-editor')?.focus(), 0);
+      }
+      else if (action === 'finish-note-edit') {
+        await saveCurrentNote();
+        state.notes.editing = false;
+        render();
+      }
+      else if (action === 'insert-note-link') {
+        const editor = $('#note-editor');
+        if (!editor) return;
+        editor.focus();
+        const selection = window.getSelection();
+        if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+          toast('Markiere zuerst den Text, der zum Link werden soll.', 'error');
+          return;
+        }
+        let url = prompt('Link einfügen (z. B. https://beispiel.de):', 'https://');
+        if (!url) return;
+        url = url.trim();
+        if (!/^(https?:|mailto:|tel:)/i.test(url)) url = `https://${url.replace(/^\/+/, '')}`;
+        document.execCommand('createLink', false, url);
+        state.notes.saveState = 'Änderungen werden gespeichert …';
+        const status = $('#note-save-state'); if (status) status.textContent = state.notes.saveState;
+        clearTimeout(state.noteSaveTimer);
+        state.noteSaveTimer = setTimeout(saveCurrentNote, 500);
+      }
       else if (action === 'delete-note-page') await deleteNotePage(el.dataset.id);
       else if (action === 'delete-note-section') await deleteNoteSection(el.dataset.id);
       else if (action === 'export-json') exportJSON();
@@ -977,7 +1130,11 @@
     if (!sectionId) return;
     const existing = state.data.notePages.filter(p=>p.section_id===sectionId);
     const data = await mutate(sb.from('note_pages').insert({wedding_id:wid(), section_id:sectionId, title:'Neue Seite', content_html:'', position:existing.length}).select().single(), 'Seite angelegt');
-    state.notes.sectionId = sectionId; state.notes.pageId = data.id; await loadAllData();
+    state.notes.sectionId = sectionId;
+    state.notes.pageId = data.id;
+    state.notes.editing = true;
+    if (!state.notes.expandedSectionIds.includes(sectionId)) state.notes.expandedSectionIds.push(sectionId);
+    await loadAllData();
   }
 
   async function saveCurrentNote() {
@@ -1005,14 +1162,14 @@
   async function deleteNotePage(id) {
     if (!confirm('Diese Notizseite wirklich löschen?')) return;
     await mutate(sb.from('note_pages').delete().eq('id',id), 'Seite gelöscht');
-    if (state.notes.pageId===id) state.notes.pageId=null;
+    if (state.notes.pageId===id) { state.notes.pageId=null; state.notes.editing=false; }
     await loadAllData();
   }
 
   async function deleteNoteSection(id) {
     if (!confirm('Dieses Kapitel inklusive aller Seiten wirklich löschen?')) return;
     await mutate(sb.from('note_sections').delete().eq('id',id), 'Kapitel gelöscht');
-    state.notes.sectionId=null; state.notes.pageId=null; state.modal=null;
+    state.notes.sectionId=null; state.notes.pageId=null; state.notes.editing=false; state.modal=null;
     await loadAllData();
   }
 
