@@ -29,7 +29,8 @@
     filters: {
       todoStatus: 'all',
       guestRsvp: 'all',
-      guestTag: 'all',
+      guestTags: [],
+      guestHousehold: 'all',
       guestSearch: '',
       guestSort: 'name'
     },
@@ -321,37 +322,94 @@
   function guestsView() {
     const d = state.data;
     const rsvp = state.filters.guestRsvp;
-    const tag = state.filters.guestTag;
-    const q = state.filters.guestSearch.trim().toLowerCase();
+    const selectedTags = Array.isArray(state.filters.guestTags) ? state.filters.guestTags : [];
+    const householdFilter = state.filters.guestHousehold || 'all';
+    const q = state.filters.guestSearch.trim().toLocaleLowerCase('de-DE');
+
+    // Haushalte sind frei benennbar. Gleiche Namen (Groß-/Kleinschreibung ignoriert)
+    // werden als ein Haushalt gezählt.
+    const householdMap = new Map();
+    d.guests.forEach(g => {
+      const label = String(g.household || '').trim();
+      if (!label) return;
+      const key = label.toLocaleLowerCase('de-DE');
+      if (!householdMap.has(key)) householdMap.set(key, label);
+    });
+    const households = [...householdMap.entries()]
+      .map(([key, label]) => ({key, label}))
+      .sort((a,b) => a.label.localeCompare(b.label, 'de'));
+
     let guests = d.guests.filter(g => {
       const rsvpOk = rsvp === 'all' || g.rsvp_status === rsvp;
-      const tagOk = tag === 'all' || d.guestTagLinks.some(l=>l.guest_id===g.id && l.tag_id===tag);
-      const searchOk = !q || `${g.first_name} ${g.last_name} ${g.email} ${g.table_name}`.toLowerCase().includes(q);
-      return rsvpOk && tagOk && searchOk;
+
+      // Mehrere Tags werden als UND-Filter kombiniert:
+      // Ein Gast muss alle ausgewählten Tags besitzen.
+      const guestTagIds = d.guestTagLinks
+        .filter(link => link.guest_id === g.id)
+        .map(link => link.tag_id);
+      const tagOk = selectedTags.length === 0 || selectedTags.every(tagId => guestTagIds.includes(tagId));
+
+      const householdKey = String(g.household || '').trim().toLocaleLowerCase('de-DE');
+      const householdOk = householdFilter === 'all' || householdKey === householdFilter;
+      const searchOk = !q || `${g.first_name} ${g.last_name} ${g.household || ''}`.toLocaleLowerCase('de-DE').includes(q);
+      return rsvpOk && tagOk && householdOk && searchOk;
     });
+
     const sort = state.filters.guestSort;
     guests.sort((a,b) => {
-      if (sort === 'rsvp') return a.rsvp_status.localeCompare(b.rsvp_status) || a.last_name.localeCompare(b.last_name,'de');
-      if (sort === 'size') return Number(b.party_size)-Number(a.party_size) || a.last_name.localeCompare(b.last_name,'de');
+      if (sort === 'rsvp') return a.rsvp_status.localeCompare(b.rsvp_status) || `${a.last_name} ${a.first_name}`.localeCompare(`${b.last_name} ${b.first_name}`,'de');
+      if (sort === 'size') return Number(b.party_size)-Number(a.party_size) || `${a.last_name} ${a.first_name}`.localeCompare(`${b.last_name} ${b.first_name}`,'de');
+      if (sort === 'household') {
+        const ah = String(a.household || '').trim();
+        const bh = String(b.household || '').trim();
+        if (!ah && bh) return 1;
+        if (ah && !bh) return -1;
+        return ah.localeCompare(bh, 'de') || `${a.last_name} ${a.first_name}`.localeCompare(`${b.last_name} ${b.first_name}`,'de');
+      }
       return `${a.last_name} ${a.first_name}`.localeCompare(`${b.last_name} ${b.first_name}`,'de');
     });
+
     const personCount = d.guests.reduce((s,g)=>s+Number(g.party_size||1),0);
     const yesCount = d.guests.filter(g=>g.rsvp_status==='yes').reduce((s,g)=>s+Number(g.party_size||1),0);
     const openCount = d.guests.filter(g=>g.rsvp_status==='open').reduce((s,g)=>s+Number(g.party_size||1),0);
     const noCount = d.guests.filter(g=>g.rsvp_status==='no').reduce((s,g)=>s+Number(g.party_size||1),0);
 
+    // Diese Zahl entspricht immer exakt der gerade sichtbaren, gefilterten Liste.
+    const visibleEntryCount = guests.length;
+    const visibleHouseholdCount = new Set(
+      guests
+        .map(g => String(g.household || '').trim().toLocaleLowerCase('de-DE'))
+        .filter(Boolean)
+    ).size;
+    const totalHouseholdCount = households.length;
+
     return `
-      <div class="flex items-center justify-between gap-12"><div><h1 class="page-title">Gästeliste</h1><p class="page-subtitle">${personCount} Personen insgesamt · ${d.guests.length} Einträge</p></div><button class="btn btn-primary btn-sm" data-action="new-guest"><i data-lucide="user-plus"></i><span class="hidden-mobile"> Gast</span></button></div>
+      <div class="flex items-center justify-between gap-12"><div><h1 class="page-title">Gästeliste</h1><p class="page-subtitle"><strong>${visibleEntryCount} ${visibleEntryCount===1?'Eintrag':'Einträge'}</strong> · ${visibleHouseholdCount} von ${totalHouseholdCount} ${totalHouseholdCount===1?'Haushalt':'Haushalten'} · ${personCount} Personen insgesamt</p></div><button class="btn btn-primary btn-sm" data-action="new-guest"><i data-lucide="user-plus"></i><span class="hidden-mobile"> Gast</span></button></div>
       <div class="chips">
         ${[['all',`Alle (${personCount})`],['yes',`Zugesagt (${yesCount})`],['open',`Offen (${openCount})`],['no',`Abgesagt (${noCount})`]].map(([v,l])=>`<button class="chip ${rsvp===v?'active':''}" data-action="guest-rsvp-filter" data-value="${v}">${l}</button>`).join('')}
       </div>
       <div class="search-row">
-        <div class="search-box"><i data-lucide="search"></i><input class="input" id="guest-search" value="${attr(state.filters.guestSearch)}" placeholder="Gäste suchen …" /></div>
+        <div class="search-box"><i data-lucide="search"></i><input class="input" id="guest-search" value="${attr(state.filters.guestSearch)}" placeholder="Gäste oder Haushalt suchen …" /></div>
         <button class="btn btn-secondary" data-action="manage-tags"><i data-lucide="tags"></i></button>
       </div>
-      <div class="flex gap-8" style="align-items:center;overflow:hidden">
-        <div class="chips" style="flex:1">${`<button class="chip ${tag==='all'?'active':''}" data-action="guest-tag-filter" data-value="all">Alle Tags</button>`}${d.guestTags.map(t=>`<button class="chip ${tag===t.id?'tag-active':''}" style="background:${esc(t.color)}" data-action="guest-tag-filter" data-value="${t.id}">${esc(t.name)}</button>`).join('')}</div>
-        <select class="select" id="guest-sort" style="width:auto;padding:8px 30px 8px 10px"><option value="name" ${sort==='name'?'selected':''}>Name</option><option value="rsvp" ${sort==='rsvp'?'selected':''}>RSVP</option><option value="size" ${sort==='size'?'selected':''}>Größe</option></select>
+      <div class="chips" style="margin-bottom:8px">
+        <button class="chip ${selectedTags.length===0?'active':''}" data-action="guest-tag-filter" data-value="all">Alle Tags</button>
+        ${d.guestTags.map(t=>`<button class="chip ${selectedTags.includes(t.id)?'tag-active':''}" style="background:${esc(t.color)}" data-action="guest-tag-filter" data-value="${t.id}" aria-pressed="${selectedTags.includes(t.id)?'true':'false'}">${esc(t.name)}</button>`).join('')}
+      </div>
+      <div class="form-grid" style="grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin-bottom:12px">
+        <select class="select" id="guest-household-filter" aria-label="Nach Haushalt filtern">
+          <option value="all" ${householdFilter==='all'?'selected':''}>Alle Haushalte (${totalHouseholdCount})</option>
+          ${households.map(h => {
+            const count = d.guests.filter(g => String(g.household || '').trim().toLocaleLowerCase('de-DE') === h.key).length;
+            return `<option value="${attr(h.key)}" ${householdFilter===h.key?'selected':''}>${esc(h.label)} (${count})</option>`;
+          }).join('')}
+        </select>
+        <select class="select" id="guest-sort" aria-label="Gäste sortieren">
+          <option value="name" ${sort==='name'?'selected':''}>Sortierung: Name</option>
+          <option value="household" ${sort==='household'?'selected':''}>Sortierung: Haushalt</option>
+          <option value="rsvp" ${sort==='rsvp'?'selected':''}>Sortierung: RSVP</option>
+          <option value="size" ${sort==='size'?'selected':''}>Sortierung: Personen</option>
+        </select>
       </div>
       <div class="list mt-12">${guests.map(guestRow).join('')}</div>
       ${!guests.length ? `<div class="empty-state card mt-12"><i data-lucide="users-round"></i><strong>Keine passenden Gäste</strong><span>Ändert Filter oder legt einen neuen Gast an.</span></div>` : ''}`;
@@ -362,7 +420,7 @@
     const badge = g.rsvp_status==='yes' ? ['Zugesagt','success'] : g.rsvp_status==='no' ? ['Abgesagt','danger'] : ['Offen',''];
     return `<button class="list-row clickable" style="width:100%;text-align:left" data-action="edit-guest" data-id="${g.id}">
       <span class="avatar">${initials(g.first_name,g.last_name)}</span>
-      <span class="row-main"><strong>${esc(`${g.first_name} ${g.last_name}`.trim())}</strong><small>${g.party_size} ${Number(g.party_size)===1?'Person':'Personen'}${g.table_name?` · Tisch ${esc(g.table_name)}`:''}</small><span class="tags-inline">${tags.map(t=>`<span class="mini-tag" style="background:${esc(t.color)}">${esc(t.name)}</span>`).join('')}</span></span>
+      <span class="row-main"><strong>${esc(`${g.first_name} ${g.last_name}`.trim())}</strong><small>${g.party_size} ${Number(g.party_size)===1?'Person':'Personen'}${g.household?` · Haushalt ${esc(g.household)}`:''}</small><span class="tags-inline">${tags.map(t=>`<span class="mini-tag" style="background:${esc(t.color)}">${esc(t.name)}</span>`).join('')}</span></span>
       <span class="badge ${badge[1]}">${badge[0]}</span>
     </button>`;
   }
@@ -456,8 +514,8 @@
       title = g ? 'Gast bearbeiten' : 'Gast hinzufügen';
       body = `<form data-form="save-guest" data-id="${g?.id || ''}">
         <div class="form-grid"><div class="field"><label>Vorname</label><input class="input" name="first_name" required value="${attr(g?.first_name || '')}" /></div><div class="field"><label>Nachname</label><input class="input" name="last_name" value="${attr(g?.last_name || '')}" /></div></div>
-        <div class="form-grid"><div class="field"><label>E-Mail</label><input class="input" type="email" name="email" value="${attr(g?.email || '')}" /></div><div class="field"><label>Telefon</label><input class="input" name="phone" value="${attr(g?.phone || '')}" /></div></div>
-        <div class="form-grid"><div class="field"><label>RSVP</label><select class="select" name="rsvp_status"><option value="open" ${!g||g.rsvp_status==='open'?'selected':''}>Offen</option><option value="yes" ${g?.rsvp_status==='yes'?'selected':''}>Zugesagt</option><option value="no" ${g?.rsvp_status==='no'?'selected':''}>Abgesagt</option></select></div><div class="field"><label>Personen</label><input class="input" type="number" min="1" max="20" name="party_size" value="${attr(g?.party_size || 1)}" /></div><div class="field"><label>Tisch</label><input class="input" name="table_name" value="${attr(g?.table_name || '')}" /></div></div>
+        <div class="field"><label>Haushalt</label><input class="input" name="household" value="${attr(g?.household || '')}" placeholder="z. B. Familie Müller" /></div>
+        <div class="form-grid"><div class="field"><label>RSVP</label><select class="select" name="rsvp_status"><option value="open" ${!g||g.rsvp_status==='open'?'selected':''}>Offen</option><option value="yes" ${g?.rsvp_status==='yes'?'selected':''}>Zugesagt</option><option value="no" ${g?.rsvp_status==='no'?'selected':''}>Abgesagt</option></select></div><div class="field"><label>Personen</label><input class="input" type="number" min="1" max="20" name="party_size" value="${attr(g?.party_size || 1)}" /></div></div>
         <div class="field"><label>Tags</label><div class="chips">${state.data.guestTags.length?state.data.guestTags.map(t=>`<label class="chip" style="background:${esc(t.color)}"><input type="checkbox" name="tag_ids" value="${t.id}" ${linked.has(t.id)?'checked':''} /> ${esc(t.name)}</label>`).join(''):'<span class="muted">Noch keine Tags angelegt.</span>'}</div></div>
         <div class="field"><label>Notizen</label><textarea class="textarea" name="notes">${esc(g?.notes || '')}</textarea></div>
         <div class="form-actions">${g?`<button type="button" class="btn btn-danger" data-action="delete-guest" data-id="${g.id}">Löschen</button>`:''}<button class="btn btn-primary" type="submit">Speichern</button></div>
@@ -670,8 +728,6 @@
     return data;
   }
 
-  function memberName(id) { return state.members.find(m=>m.user_id===id)?.display_name || 'Gemeinsam'; }
-
   document.addEventListener('click', async (e) => {
     const cmdBtn = e.target.closest('[data-command]');
     if (cmdBtn) {
@@ -715,9 +771,24 @@
       else if (action === 'edit-guest') openModal('guest', {id:el.dataset.id});
       else if (action === 'delete-guest') await deleteRow('guests', el.dataset.id, 'Gast gelöscht');
       else if (action === 'guest-rsvp-filter') { state.filters.guestRsvp = el.dataset.value; render(); }
-      else if (action === 'guest-tag-filter') { state.filters.guestTag = el.dataset.value; render(); }
+      else if (action === 'guest-tag-filter') {
+        const value = el.dataset.value;
+        if (value === 'all') {
+          state.filters.guestTags = [];
+        } else {
+          const selected = Array.isArray(state.filters.guestTags) ? [...state.filters.guestTags] : [];
+          const index = selected.indexOf(value);
+          if (index >= 0) selected.splice(index, 1);
+          else selected.push(value);
+          state.filters.guestTags = selected;
+        }
+        render();
+      }
       else if (action === 'manage-tags') openModal('tags');
-      else if (action === 'delete-tag') await deleteRow('guest_tags', el.dataset.id, 'Tag gelöscht', false);
+      else if (action === 'delete-tag') {
+        state.filters.guestTags = (state.filters.guestTags || []).filter(id => id !== el.dataset.id);
+        await deleteRow('guest_tags', el.dataset.id, 'Tag gelöscht', false);
+      }
       else if (action === 'new-note-section') openModal('note-section');
       else if (action === 'edit-note-section') openModal('note-section', {id:el.dataset.id});
       else if (action === 'select-note-section') { await flushNoteSave(); state.notes.sectionId = el.dataset.id; state.notes.pageId = null; render(); }
@@ -769,6 +840,7 @@
 
   document.addEventListener('change', (e) => {
     if (e.target.id === 'guest-sort') { state.filters.guestSort = e.target.value; render(); }
+    if (e.target.id === 'guest-household-filter') { state.filters.guestHousehold = e.target.value; render(); }
     if (e.target.matches('[data-editor-size]')) {
       document.execCommand('fontSize', false, e.target.value); $('#note-editor')?.focus();
     }
@@ -869,8 +941,8 @@
   async function saveGuest(id, fd) {
     const payload = {
       wedding_id:wid(), first_name:String(fd.get('first_name')||'').trim(), last_name:String(fd.get('last_name')||'').trim(),
-      email:String(fd.get('email')||'').trim(), phone:String(fd.get('phone')||'').trim(), rsvp_status:fd.get('rsvp_status') || 'open',
-      party_size:Number(fd.get('party_size')||1), table_name:String(fd.get('table_name')||'').trim(), notes:String(fd.get('notes')||'')
+      household:String(fd.get('household')||'').trim(), rsvp_status:fd.get('rsvp_status') || 'open',
+      party_size:Number(fd.get('party_size')||1), notes:String(fd.get('notes')||'')
     };
     let guestId = id;
     if (id) await mutate(sb.from('guests').update(payload).eq('id',id), 'Gast gespeichert');
