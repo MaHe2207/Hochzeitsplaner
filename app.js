@@ -28,6 +28,7 @@
     noteSaveTimer: null,
     filters: {
       todoStatus: 'all',
+      budgetVendor: 'all',
       guestRsvp: 'all',
       guestTags: [],
       guestHousehold: 'all',
@@ -329,7 +330,34 @@
   }
 
   function budgetView() {
-    const items = state.data.budgetItems;
+    const allItems = state.data.budgetItems;
+    const vendorFilter = state.filters.budgetVendor || 'all';
+
+    // Anbieter werden ohne Beachtung von Groß-/Kleinschreibung zusammengefasst.
+    // Leere Anbieter bleiben als eigener Filter „Ohne Anbieter“ auswählbar.
+    const vendorMap = new Map();
+    allItems.forEach(item => {
+      const label = String(item.vendor || '').trim();
+      const key = label ? label.toLocaleLowerCase('de-DE') : '__none__';
+      if (!vendorMap.has(key)) vendorMap.set(key, label || 'Ohne Anbieter');
+    });
+    const vendors = [...vendorMap.entries()]
+      .map(([key, label]) => ({key, label}))
+      .sort((a,b) => {
+        if (a.key === '__none__') return 1;
+        if (b.key === '__none__') return -1;
+        return a.label.localeCompare(b.label, 'de');
+      });
+
+    const items = vendorFilter === 'all'
+      ? allItems
+      : allItems.filter(item => {
+          const label = String(item.vendor || '').trim();
+          const key = label ? label.toLocaleLowerCase('de-DE') : '__none__';
+          return key === vendorFilter;
+        });
+
+    const selectedVendor = vendors.find(v => v.key === vendorFilter);
     const planned = items.reduce((s,b)=>s+Number(b.planned_cents||0),0);
     const actual = items.reduce((s,b)=>s+Number(b.actual_cents||0),0);
     const paid = items.reduce((s,b)=>s+Number(b.paid_cents||0),0);
@@ -339,18 +367,30 @@
     return `
       <h1 class="page-title">Budget</h1>
       <p class="page-subtitle">Soll, tatsächliche Kosten und bereits bezahlte Beträge bleiben für euch beide aktuell.</p>
-      <button class="btn btn-primary" data-action="new-budget"><i data-lucide="plus"></i> Kostenpunkt</button>
-      <div class="budget-summary mt-16">
-        <div class="card budget-kpi"><small>Geplant</small><b>${euros(planned)}</b></div>
-        <div class="card budget-kpi"><small>Tatsächlich</small><b>${euros(actual)}</b></div>
-        <div class="card budget-kpi"><small>Bezahlt</small><b>${euros(paid)}</b></div>
+      <div class="flex gap-8" style="flex-wrap:wrap;align-items:end">
+        <button class="btn btn-primary" data-action="new-budget"><i data-lucide="plus"></i> Kostenpunkt</button>
+        <div class="field" style="margin:0;min-width:min(100%,260px);flex:1">
+          <label>Anbieter filtern</label>
+          <select class="select" id="budget-vendor-filter">
+            <option value="all" ${vendorFilter==='all'?'selected':''}>Alle Anbieter</option>
+            ${vendors.map(v=>`<option value="${attr(v.key)}" ${vendorFilter===v.key?'selected':''}>${esc(v.label)}</option>`).join('')}
+          </select>
+        </div>
       </div>
-      <div class="card card-pad mt-12"><div class="flex justify-between gap-12"><span class="muted">Budget-Nutzung</span><strong>${pct}%</strong></div><div class="progress-track mt-8"><div class="progress-bar" style="width:${pct}%"></div></div></div>
+      <p class="muted mt-12" style="font-size:12px">
+        ${selectedVendor ? `${items.length} Kostenpunkt${items.length===1?'':'e'} bei ${esc(selectedVendor.label)}` : `${items.length} Kostenpunkt${items.length===1?'':'e'} insgesamt`}
+      </p>
+      <div class="budget-summary mt-16">
+        <div class="card budget-kpi"><small>Geplant${selectedVendor?' · gefiltert':''}</small><b>${euros(planned)}</b></div>
+        <div class="card budget-kpi"><small>Tatsächlich${selectedVendor?' · gefiltert':''}</small><b>${euros(actual)}</b></div>
+        <div class="card budget-kpi"><small>Bezahlt${selectedVendor?' · gefiltert':''}</small><b>${euros(paid)}</b></div>
+      </div>
+      <div class="card card-pad mt-12"><div class="flex justify-between gap-12"><span class="muted">Budget-Nutzung${selectedVendor?' (Filter)':''}</span><strong>${pct}%</strong></div><div class="progress-track mt-8"><div class="progress-bar" style="width:${pct}%"></div></div></div>
       ${categories.map(cat => {
         const list = items.filter(i=>i.category===cat);
         return `<div class="section-heading"><h2>${esc(cat)}</h2><small>${euros(list.reduce((s,b)=>s+Number(b.actual_cents||0),0))}</small></div><div class="list">${list.map(budgetRow).join('')}</div>`;
       }).join('')}
-      ${!items.length ? `<div class="empty-state card mt-16"><i data-lucide="wallet-cards"></i><strong>Noch keine Kosten eingetragen</strong><span>Legt den ersten Kostenpunkt für Location, Ringe, Floristik oder etwas ganz Eigenes an.</span></div>` : ''}`;
+      ${!items.length ? `<div class="empty-state card mt-16"><i data-lucide="wallet-cards"></i><strong>${allItems.length ? 'Keine Kostenpunkte für diesen Anbieter' : 'Noch keine Kosten eingetragen'}</strong><span>${allItems.length ? 'Wähle einen anderen Anbieter oder „Alle Anbieter“.' : 'Legt den ersten Kostenpunkt für Location, Ringe, Floristik oder etwas ganz Eigenes an.'}</span></div>` : ''}`;
   }
 
   function budgetRow(b) {
@@ -992,6 +1032,7 @@
   });
 
   document.addEventListener('change', (e) => {
+    if (e.target.id === 'budget-vendor-filter') { state.filters.budgetVendor = e.target.value; render(); }
     if (e.target.id === 'guest-sort') { state.filters.guestSort = e.target.value; render(); }
     if (e.target.id === 'guest-household-filter') { state.filters.guestHousehold = e.target.value; render(); }
     if (e.target.matches('[data-editor-size]')) {
