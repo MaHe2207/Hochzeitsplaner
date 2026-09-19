@@ -28,7 +28,7 @@
     noteSaveTimer: null,
     filters: {
       todoStatus: 'all',
-      budgetVendor: 'all',
+      budgetVendors: [],
       guestRsvp: 'all',
       guestTags: [],
       guestHousehold: 'all',
@@ -331,7 +331,7 @@
 
   function budgetView() {
     const allItems = state.data.budgetItems;
-    const vendorFilter = state.filters.budgetVendor || 'all';
+    const selectedVendors = Array.isArray(state.filters.budgetVendors) ? state.filters.budgetVendors : [];
 
     // Anbieter werden ohne Beachtung von Groß-/Kleinschreibung zusammengefasst.
     // Leere Anbieter bleiben als eigener Filter „Ohne Anbieter“ auswählbar.
@@ -349,15 +349,20 @@
         return a.label.localeCompare(b.label, 'de');
       });
 
-    const items = vendorFilter === 'all'
+    // Mehrere Anbieter funktionieren als ODER-Verknüpfung:
+    // Ein Kostenpunkt wird angezeigt, sobald sein Anbieter ausgewählt ist.
+    const items = selectedVendors.length === 0
       ? allItems
       : allItems.filter(item => {
           const label = String(item.vendor || '').trim();
           const key = label ? label.toLocaleLowerCase('de-DE') : '__none__';
-          return key === vendorFilter;
+          return selectedVendors.includes(key);
         });
 
-    const selectedVendor = vendors.find(v => v.key === vendorFilter);
+    const selectedLabels = vendors
+      .filter(v => selectedVendors.includes(v.key))
+      .map(v => v.label);
+    const isFiltered = selectedVendors.length > 0;
     const planned = items.reduce((s,b)=>s+Number(b.planned_cents||0),0);
     const actual = items.reduce((s,b)=>s+Number(b.actual_cents||0),0);
     const paid = items.reduce((s,b)=>s+Number(b.paid_cents||0),0);
@@ -367,30 +372,32 @@
     return `
       <h1 class="page-title">Budget</h1>
       <p class="page-subtitle">Soll, tatsächliche Kosten und bereits bezahlte Beträge bleiben für euch beide aktuell.</p>
-      <div class="flex gap-8" style="flex-wrap:wrap;align-items:end">
+      <div class="flex gap-8" style="flex-wrap:wrap;align-items:center">
         <button class="btn btn-primary" data-action="new-budget"><i data-lucide="plus"></i> Kostenpunkt</button>
-        <div class="field" style="margin:0;min-width:min(100%,260px);flex:1">
-          <label>Anbieter filtern</label>
-          <select class="select" id="budget-vendor-filter">
-            <option value="all" ${vendorFilter==='all'?'selected':''}>Alle Anbieter</option>
-            ${vendors.map(v=>`<option value="${attr(v.key)}" ${vendorFilter===v.key?'selected':''}>${esc(v.label)}</option>`).join('')}
-          </select>
-        </div>
       </div>
+
+      <div class="section-heading"><h2>Anbieter filtern</h2><small>Mehrfachauswahl · ODER</small></div>
+      <div class="chips">
+        <button class="chip ${selectedVendors.length===0?'active':''}" data-action="budget-vendor-filter" data-value="all">Alle Anbieter</button>
+        ${vendors.map(v=>`<button class="chip ${selectedVendors.includes(v.key)?'active':''}" data-action="budget-vendor-filter" data-value="${attr(v.key)}" aria-pressed="${selectedVendors.includes(v.key)?'true':'false'}">${esc(v.label)}</button>`).join('')}
+      </div>
+
       <p class="muted mt-12" style="font-size:12px">
-        ${selectedVendor ? `${items.length} Kostenpunkt${items.length===1?'':'e'} bei ${esc(selectedVendor.label)}` : `${items.length} Kostenpunkt${items.length===1?'':'e'} insgesamt`}
+        ${isFiltered
+          ? `${items.length} Kostenpunkt${items.length===1?'':'e'} · ${selectedLabels.map(esc).join(' oder ')}`
+          : `${items.length} Kostenpunkt${items.length===1?'':'e'} insgesamt`}
       </p>
       <div class="budget-summary mt-16">
-        <div class="card budget-kpi"><small>Geplant${selectedVendor?' · gefiltert':''}</small><b>${euros(planned)}</b></div>
-        <div class="card budget-kpi"><small>Tatsächlich${selectedVendor?' · gefiltert':''}</small><b>${euros(actual)}</b></div>
-        <div class="card budget-kpi"><small>Bezahlt${selectedVendor?' · gefiltert':''}</small><b>${euros(paid)}</b></div>
+        <div class="card budget-kpi"><small>Geplant${isFiltered?' · gefiltert':''}</small><b>${euros(planned)}</b></div>
+        <div class="card budget-kpi"><small>Tatsächlich${isFiltered?' · gefiltert':''}</small><b>${euros(actual)}</b></div>
+        <div class="card budget-kpi"><small>Bezahlt${isFiltered?' · gefiltert':''}</small><b>${euros(paid)}</b></div>
       </div>
-      <div class="card card-pad mt-12"><div class="flex justify-between gap-12"><span class="muted">Budget-Nutzung${selectedVendor?' (Filter)':''}</span><strong>${pct}%</strong></div><div class="progress-track mt-8"><div class="progress-bar" style="width:${pct}%"></div></div></div>
+      <div class="card card-pad mt-12"><div class="flex justify-between gap-12"><span class="muted">Budget-Nutzung${isFiltered?' (Filter)':''}</span><strong>${pct}%</strong></div><div class="progress-track mt-8"><div class="progress-bar" style="width:${pct}%"></div></div></div>
       ${categories.map(cat => {
         const list = items.filter(i=>i.category===cat);
         return `<div class="section-heading"><h2>${esc(cat)}</h2><small>${euros(list.reduce((s,b)=>s+Number(b.actual_cents||0),0))}</small></div><div class="list">${list.map(budgetRow).join('')}</div>`;
       }).join('')}
-      ${!items.length ? `<div class="empty-state card mt-16"><i data-lucide="wallet-cards"></i><strong>${allItems.length ? 'Keine Kostenpunkte für diesen Anbieter' : 'Noch keine Kosten eingetragen'}</strong><span>${allItems.length ? 'Wähle einen anderen Anbieter oder „Alle Anbieter“.' : 'Legt den ersten Kostenpunkt für Location, Ringe, Floristik oder etwas ganz Eigenes an.'}</span></div>` : ''}`;
+      ${!items.length ? `<div class="empty-state card mt-16"><i data-lucide="wallet-cards"></i><strong>${allItems.length ? 'Keine Kostenpunkte für diese Auswahl' : 'Noch keine Kosten eingetragen'}</strong><span>${allItems.length ? 'Wähle andere Anbieter oder „Alle Anbieter“.' : 'Legt den ersten Kostenpunkt für Location, Ringe, Floristik oder etwas ganz Eigenes an.'}</span></div>` : ''}`;
   }
 
   function budgetRow(b) {
@@ -639,7 +646,7 @@
         <div class="field"><label>Dienstleister / Anbieter</label><input class="input" name="vendor" value="${attr(b?.vendor || '')}" /></div>
         <div class="form-grid"><div class="field"><label>Geplant (€)</label><input class="input" inputmode="decimal" name="planned" value="${attr(((b?.planned_cents||0)/100).toFixed(2).replace('.',','))}" /></div><div class="field"><label>Tatsächlich (€)</label><input class="input" inputmode="decimal" name="actual" value="${attr(((b?.actual_cents||0)/100).toFixed(2).replace('.',','))}" /></div><div class="field"><label>Bezahlt (€)</label><input class="input" inputmode="decimal" name="paid" value="${attr(((b?.paid_cents||0)/100).toFixed(2).replace('.',','))}" /></div><div class="field"><label>Fällig am</label><input class="input" type="date" name="due_date" value="${attr(b?.due_date || '')}" /></div></div>
         <div class="field"><label>Notizen</label><textarea class="textarea" name="notes">${esc(b?.notes || '')}</textarea></div>
-        <div class="form-actions">${b?`<button type="button" class="btn btn-danger" data-action="delete-budget" data-id="${b.id}">Löschen</button>`:''}<button class="btn btn-primary" type="submit">Speichern</button></div>
+        <div class="form-actions">${b?`<button type="button" class="btn btn-secondary" data-action="duplicate-budget" data-id="${b.id}"><i data-lucide="copy"></i> Duplizieren</button><button type="button" class="btn btn-danger" data-action="delete-budget" data-id="${b.id}">Löschen</button>`:''}<button class="btn btn-primary" type="submit">Speichern</button></div>
       </form>`;
     }
 
@@ -902,6 +909,20 @@
       else if (action === 'delete-todo-section') await deleteRow('todo_sections', el.dataset.id, 'Bereich gelöscht');
       else if (action === 'new-budget') openModal('budget');
       else if (action === 'edit-budget') openModal('budget', {id:el.dataset.id});
+      else if (action === 'budget-vendor-filter') {
+        const value = el.dataset.value;
+        if (value === 'all') {
+          state.filters.budgetVendors = [];
+        } else {
+          const selected = Array.isArray(state.filters.budgetVendors) ? [...state.filters.budgetVendors] : [];
+          const index = selected.indexOf(value);
+          if (index >= 0) selected.splice(index, 1);
+          else selected.push(value);
+          state.filters.budgetVendors = selected;
+        }
+        render();
+      }
+      else if (action === 'duplicate-budget') await duplicateBudget(el.dataset.id);
       else if (action === 'delete-budget') await deleteRow('budget_items', el.dataset.id, 'Kostenpunkt gelöscht');
       else if (action === 'new-guest') openModal('guest');
       else if (action === 'edit-guest') openModal('guest', {id:el.dataset.id});
@@ -1032,7 +1053,6 @@
   });
 
   document.addEventListener('change', (e) => {
-    if (e.target.id === 'budget-vendor-filter') { state.filters.budgetVendor = e.target.value; render(); }
     if (e.target.id === 'guest-sort') { state.filters.guestSort = e.target.value; render(); }
     if (e.target.id === 'guest-household-filter') { state.filters.guestHousehold = e.target.value; render(); }
     if (e.target.matches('[data-editor-size]')) {
@@ -1119,6 +1139,33 @@
     const next = t.status === 'done' ? 'open' : 'done';
     await mutate(sb.from('todos').update({status:next}).eq('id',id), next==='done'?'Aufgabe erledigt':'Aufgabe wieder geöffnet');
     await loadAllData();
+  }
+
+  async function duplicateBudget(id) {
+    const original = state.data.budgetItems.find(item => item.id === id);
+    if (!original) return;
+
+    const payload = {
+      wedding_id: wid(),
+      title: `${original.title} (Kopie)`,
+      category: original.category || 'Sonstiges',
+      vendor: original.vendor || '',
+      planned_cents: Number(original.planned_cents || 0),
+      actual_cents: Number(original.actual_cents || 0),
+      paid_cents: Number(original.paid_cents || 0),
+      due_date: original.due_date || null,
+      notes: original.notes || ''
+    };
+
+    const data = await mutate(
+      sb.from('budget_items').insert(payload).select().single(),
+      'Kostenpunkt dupliziert'
+    );
+    if (!data) return;
+
+    state.modal = null;
+    await loadAllData();
+    openModal('budget', {id:data.id});
   }
 
   async function saveBudget(id, fd) {
