@@ -35,7 +35,7 @@
       guestSearch: '',
       guestSort: 'name'
     },
-    notes: { sectionId: null, pageId: null, saveState: '', editing: false, expandedSectionIds: [], draft: null },
+    notes: { sectionId: null, pageId: null, saveState: '', editing: false, expandedSectionIds: [], expandedInitialized: false, draft: null },
     data: emptyData()
   };
 
@@ -87,12 +87,25 @@
     if (state.notes.draft?.pageId === pageId) state.notes.draft = null;
   }
 
+  function noteTitleMarkup(page) {
+    const html = String(page?.title_html || '').trim();
+    return html ? sanitizeHtml(html) : esc(page?.title || 'Neue Seite');
+  }
+
   function beginNoteDraft(page) {
     if (!page) return null;
     const stored = readStoredNoteDraft(page.id);
-    const draft = stored?.dirty ? stored : {
+    const fallbackTitle = page.title || 'Neue Seite';
+    const fallbackTitleHtml = String(page.title_html || '').trim() || esc(fallbackTitle);
+    const draft = stored?.dirty ? {
+      ...stored,
+      title: stored.title || fallbackTitle,
+      titleHtml: stored.titleHtml || esc(stored.title || fallbackTitle),
+      contentHtml: stored.contentHtml ?? page.content_html ?? ''
+    } : {
       pageId: page.id,
-      title: page.title || 'Neue Seite',
+      title: fallbackTitle,
+      titleHtml: fallbackTitleHtml,
       contentHtml: page.content_html || '',
       dirty: false,
       updatedAt: Date.now()
@@ -104,11 +117,16 @@
   function captureNoteDraftFromDom() {
     const pageId = state.notes.pageId;
     const editor = $('#note-editor');
-    const title = $('#note-title');
-    if (!pageId || !editor || !title) return state.notes.draft;
+    const titleEditor = $('#note-title-editor');
+    if (!pageId || !editor || !titleEditor) return state.notes.draft;
+    const title = String(titleEditor.innerText || titleEditor.textContent || '')
+      .replace(/\s*\n\s*/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim() || 'Neue Seite';
     const draft = {
       pageId,
-      title: title.value,
+      title,
+      titleHtml: titleEditor.innerHTML,
       contentHtml: editor.innerHTML,
       dirty: true,
       updatedAt: Date.now()
@@ -164,7 +182,14 @@
       #app .notebook-section-pages { display:grid; gap:5px; padding:0 10px 10px 51px; border-top:1px solid var(--line, #e6e8e3); background:rgba(247,250,246,.7); }
       #app .notebook-page-row { width:100%; border:0; background:transparent; text-align:left; padding:10px 10px; border-radius:10px; color:#465049; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
       #app .notebook-page-row.active { background:var(--green-100, #eef4ef); color:var(--green-900, #17452e); font-weight:700; }
-      #app .notebook-page-row:first-child { margin-top:6px; }
+      #app .notebook-page-row:first-child { margin-top:0; }
+      #app .notebook-page-item { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px; align-items:center; }
+      #app .notebook-page-item:first-child { margin-top:6px; }
+      #app .notebook-page-order { display:flex; gap:3px; }
+      #app .notebook-page-order .icon-btn { width:30px !important; height:30px !important; }
+      #app .notebook-page-order .icon-btn:disabled { opacity:.28; cursor:default; }
+      #app .notebook-page-title-formatted { display:block; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+      #app .notebook-page-title-formatted * { display:inline; margin:0; }
       #app .notebook-empty-pages { padding:10px 8px 5px; color:var(--muted, #68716b); font-size:12px; }
       #app .note-reader-card { overflow:hidden; }
       #app .note-reader-head { display:flex; align-items:center; gap:8px; padding:15px 14px; border-bottom:1px solid var(--line, #e6e8e3); }
@@ -172,7 +197,12 @@
       #app .note-view { min-height:220px; padding:18px; line-height:1.65; background:#fff; overflow-wrap:anywhere; }
       #app .note-view a { color:var(--green-800, #24573c); text-decoration:underline; text-underline-offset:2px; overflow-wrap:anywhere; }
       #app .note-editor-card { overflow:hidden; }
-      #app .note-title-input { min-width:0; }
+      #app .note-title-editor-wrap { background:#fff; border-bottom:1px solid var(--line, #e6e8e3); }
+      #app .note-title-format-label { padding:11px 14px 5px; color:var(--muted, #68716b); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.08em; }
+      #app .note-title-toolbar { border-top:0 !important; }
+      #app .note-title-rich-editor { min-height:54px; padding:8px 16px 14px; outline:none; font:600 26px/1.25 Georgia, serif; overflow-wrap:anywhere; }
+      #app .note-title-rich-editor:empty:before { content:'Seitentitel'; color:#a0a7a2; }
+      #app .note-title-rich-editor * { max-width:100%; }
       #app .editor-toolbar { position:static !important; overflow-x:auto; flex-wrap:nowrap !important; -webkit-overflow-scrolling:touch; }
       #app .editor-toolbar > * { flex:0 0 auto; }
       #app .notebook-header-actions { display:flex; gap:8px; align-items:center; flex:0 0 auto; }
@@ -590,22 +620,24 @@
     if (state.notes.sectionId && !sectionIds.has(state.notes.sectionId)) state.notes.sectionId = null;
     if (state.notes.pageId && !pageIds.has(state.notes.pageId)) state.notes.pageId = null;
 
-    if (!state.notes.sectionId && d.noteSections[0]) state.notes.sectionId = d.noteSections[0].id;
-    if (!Array.isArray(state.notes.expandedSectionIds)) state.notes.expandedSectionIds = [];
-    if (state.notes.sectionId && !state.notes.expandedSectionIds.includes(state.notes.sectionId)) {
-      state.notes.expandedSectionIds.push(state.notes.sectionId);
-    }
-
-    const section = d.noteSections.find(s => s.id === state.notes.sectionId) || null;
     const page = d.notePages.find(p => p.id === state.notes.pageId) || null;
     if (page && page.section_id !== state.notes.sectionId) state.notes.sectionId = page.section_id;
+    if (!state.notes.sectionId && d.noteSections[0]) state.notes.sectionId = d.noteSections[0].id;
+
+    if (!Array.isArray(state.notes.expandedSectionIds)) state.notes.expandedSectionIds = [];
+    if (!state.notes.expandedInitialized) {
+      if (state.notes.sectionId && !state.notes.expandedSectionIds.includes(state.notes.sectionId)) {
+        state.notes.expandedSectionIds.push(state.notes.sectionId);
+      }
+      state.notes.expandedInitialized = true;
+    }
 
     const sectionList = d.noteSections.map(s => {
       const isOpen = state.notes.expandedSectionIds.includes(s.id);
       const isActiveSection = state.notes.sectionId === s.id;
       const pages = d.notePages
         .filter(p => p.section_id === s.id)
-        .sort((a,b) => a.position - b.position || a.created_at.localeCompare(b.created_at));
+        .sort((a,b) => Number(a.position || 0) - Number(b.position || 0) || a.created_at.localeCompare(b.created_at));
 
       return `
         <section class="notebook-section ${isActiveSection ? 'active' : ''}">
@@ -618,10 +650,16 @@
             <button class="icon-btn" style="width:34px;height:34px" data-action="edit-note-section" data-id="${s.id}" title="Kapitel bearbeiten"><i data-lucide="pencil"></i></button>
           </div>
           ${isOpen ? `<div class="notebook-section-pages">
-            ${pages.length ? pages.map(p => `
-              <button class="notebook-page-row ${state.notes.pageId === p.id ? 'active' : ''}" data-action="select-note-page" data-id="${p.id}">
-                ${esc(p.title || 'Neue Seite')}
-              </button>`).join('') : `<div class="notebook-empty-pages">Noch keine Seiten in diesem Kapitel.</div>`}
+            ${pages.length ? pages.map((p, index) => `
+              <div class="notebook-page-item">
+                <button class="notebook-page-row ${state.notes.pageId === p.id ? 'active' : ''}" data-action="select-note-page" data-id="${p.id}">
+                  <span class="notebook-page-title-formatted">${noteTitleMarkup(p)}</span>
+                </button>
+                <div class="notebook-page-order" aria-label="Seitenreihenfolge">
+                  <button class="icon-btn" data-action="move-note-page" data-id="${p.id}" data-direction="up" title="Seite nach oben" ${index === 0 ? 'disabled' : ''}><i data-lucide="chevron-up"></i></button>
+                  <button class="icon-btn" data-action="move-note-page" data-id="${p.id}" data-direction="down" title="Seite nach unten" ${index === pages.length - 1 ? 'disabled' : ''}><i data-lucide="chevron-down"></i></button>
+                </div>
+              </div>`).join('') : `<div class="notebook-empty-pages">Noch keine Seiten in diesem Kapitel.</div>`}
           </div>` : ''}
         </section>`;
     }).join('');
@@ -635,19 +673,34 @@
       </div>`;
     } else if (state.notes.editing) {
       const draft = state.notes.draft?.pageId === page.id ? state.notes.draft : beginNoteDraft(page);
-      const draftTitle = draft?.title ?? page.title ?? 'Neue Seite';
+      const draftTitleHtml = draft?.titleHtml || esc(draft?.title || page.title || 'Neue Seite');
       const draftHtml = draft?.contentHtml ?? page.content_html ?? '';
       pageArea = `
         <section class="card note-editor-card">
           <div class="note-reader-head">
-            <input class="note-title-input" id="note-title" value="${attr(draftTitle)}" aria-label="Seitentitel" />
+            <strong style="flex:1">Seite bearbeiten</strong>
             <button class="icon-btn" data-action="finish-note-edit" title="Bearbeitung beenden"><i data-lucide="check"></i></button>
             <button class="icon-btn" data-action="delete-note-page" data-id="${page.id}" title="Seite löschen"><i data-lucide="trash-2"></i></button>
           </div>
+          <div class="note-title-editor-wrap">
+            <div class="note-title-format-label">Seitentitel</div>
+            <div class="editor-toolbar note-title-toolbar">
+              <button class="tool-btn" data-title-command="bold" title="Fett"><b>B</b></button>
+              <button class="tool-btn" data-title-command="italic" title="Kursiv"><i>I</i></button>
+              <button class="tool-btn" data-title-command="underline" title="Unterstrichen"><u>U</u></button>
+              <button class="tool-btn" data-title-command="strikeThrough" title="Durchgestrichen"><s>S</s></button>
+              <select class="tool-select" data-title-size title="Schriftgröße"><option value="3">Normal</option><option value="2">Klein</option><option value="4">Groß</option><option value="5">Sehr groß</option></select>
+              <input class="tool-color" type="color" data-title-color value="#172019" title="Titelfarbe" />
+              <button class="tool-btn" data-title-command="removeFormat" title="Titelformatierung entfernen">Tx</button>
+            </div>
+            <div class="note-title-rich-editor" id="note-title-editor" contenteditable="true" spellcheck="true">${sanitizeHtml(draftTitleHtml)}</div>
+          </div>
+          <div class="note-title-format-label">Seiteninhalt</div>
           <div class="editor-toolbar">
             <button class="tool-btn" data-command="bold" title="Fett"><b>B</b></button>
             <button class="tool-btn" data-command="italic" title="Kursiv"><i>I</i></button>
             <button class="tool-btn" data-command="underline" title="Unterstrichen"><u>U</u></button>
+            <button class="tool-btn" data-command="strikeThrough" title="Durchgestrichen"><s>S</s></button>
             <button class="tool-btn" data-command="insertUnorderedList" title="Aufzählung">•≡</button>
             <button class="tool-btn" data-command="insertOrderedList" title="Nummerierung">1.</button>
             <button class="tool-btn" data-action="insert-note-link" title="Link einfügen"><i data-lucide="link"></i></button>
@@ -663,7 +716,7 @@
       pageArea = `
         <section class="card note-reader-card">
           <div class="note-reader-head">
-            <h2 class="note-reader-title">${esc(page.title || 'Neue Seite')}</h2>
+            <h2 class="note-reader-title">${noteTitleMarkup(page)}</h2>
             <button class="icon-btn" data-action="edit-note-page" data-id="${page.id}" title="Seite bearbeiten"><i data-lucide="pencil"></i></button>
           </div>
           <div class="note-view">${page.content_html ? sanitizeHtml(page.content_html) : '<span class="muted">Noch kein Inhalt. Tippt auf den Stift, um diese Seite zu bearbeiten.</span>'}</div>
@@ -672,7 +725,7 @@
 
     return `
       <div class="flex items-center justify-between gap-12">
-        <div><h1 class="page-title">Notizbuch</h1><p class="page-subtitle">Kapitel aufklappen, Seite auswählen und über den Stift bearbeiten.</p></div>
+        <div><h1 class="page-title">Notizbuch</h1><p class="page-subtitle">Kapitel auf- und zuklappen, Seiten anordnen und Seitentitel formatieren.</p></div>
         <div class="notebook-header-actions"><button class="btn btn-primary btn-sm" data-action="new-note-section"><i data-lucide="folder-plus"></i> Kapitel</button></div>
       </div>
       <div class="notebook-accordion">${sectionList}</div>
@@ -948,6 +1001,16 @@
   }
 
   document.addEventListener('click', async (e) => {
+    const titleCmdBtn = e.target.closest('[data-title-command]');
+    if (titleCmdBtn) {
+      e.preventDefault();
+      document.execCommand(titleCmdBtn.dataset.titleCommand, false, null);
+      $('#note-title-editor')?.focus();
+      captureNoteDraftFromDom();
+      scheduleNoteSave(500);
+      return;
+    }
+
     const cmdBtn = e.target.closest('[data-command]');
     if (cmdBtn) {
       e.preventDefault();
@@ -1038,12 +1101,14 @@
           state.notes.editing = false;
         }
         state.notes.expandedSectionIds = expanded;
+        state.notes.expandedInitialized = true;
         render();
       }
       else if (action === 'new-note-page') {
         await flushNoteSave();
         const sectionId = el.dataset.sectionId || state.notes.sectionId;
         if (sectionId && !state.notes.expandedSectionIds.includes(sectionId)) state.notes.expandedSectionIds.push(sectionId);
+        state.notes.expandedInitialized = true;
         await createNotePage(sectionId);
       }
       else if (action === 'select-note-page') {
@@ -1052,8 +1117,13 @@
         state.notes.pageId = el.dataset.id;
         state.notes.sectionId = nextPage?.section_id || state.notes.sectionId;
         if (state.notes.sectionId && !state.notes.expandedSectionIds.includes(state.notes.sectionId)) state.notes.expandedSectionIds.push(state.notes.sectionId);
+        state.notes.expandedInitialized = true;
         state.notes.editing = false;
         render();
+      }
+      else if (action === 'move-note-page') {
+        await flushNoteSave();
+        await moveNotePage(el.dataset.id, el.dataset.direction);
       }
       else if (action === 'edit-note-page') {
         state.notes.pageId = el.dataset.id || state.notes.pageId;
@@ -1128,7 +1198,7 @@
       clearTimeout(e.target._timer);
       e.target._timer = setTimeout(render, 180);
     }
-    if (e.target.id === 'note-editor' || e.target.id === 'note-title') {
+    if (e.target.id === 'note-editor' || e.target.id === 'note-title-editor') {
       // Sofort lokal sichern; der Server-Save bleibt bewusst entprellt.
       captureNoteDraftFromDom();
       scheduleNoteSave(700);
@@ -1138,6 +1208,12 @@
   document.addEventListener('change', (e) => {
     if (e.target.id === 'guest-sort') { state.filters.guestSort = e.target.value; render(); }
     if (e.target.id === 'guest-household-filter') { state.filters.guestHousehold = e.target.value; render(); }
+    if (e.target.matches('[data-title-size]')) {
+      document.execCommand('fontSize', false, e.target.value); $('#note-title-editor')?.focus(); captureNoteDraftFromDom(); scheduleNoteSave(500);
+    }
+    if (e.target.matches('[data-title-color]')) {
+      document.execCommand('foreColor', false, e.target.value); $('#note-title-editor')?.focus(); captureNoteDraftFromDom(); scheduleNoteSave(500);
+    }
     if (e.target.matches('[data-editor-size]')) {
       document.execCommand('fontSize', false, e.target.value); $('#note-editor')?.focus(); captureNoteDraftFromDom(); scheduleNoteSave(500);
     }
@@ -1305,7 +1381,45 @@
     state.notes.pageId = data.id;
     state.notes.editing = true;
     if (!state.notes.expandedSectionIds.includes(sectionId)) state.notes.expandedSectionIds.push(sectionId);
+    state.notes.expandedInitialized = true;
     await loadAllData();
+  }
+
+  async function moveNotePage(id, direction) {
+    const page = state.data.notePages.find(p => p.id === id);
+    if (!page || !['up','down'].includes(direction)) return;
+    const pages = state.data.notePages
+      .filter(p => p.section_id === page.section_id)
+      .sort((a,b) => Number(a.position || 0) - Number(b.position || 0) || a.created_at.localeCompare(b.created_at));
+    const index = pages.findIndex(p => p.id === id);
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (index < 0 || targetIndex < 0 || targetIndex >= pages.length) return;
+
+    const reordered = [...pages];
+    const [moved] = reordered.splice(index, 1);
+    reordered.splice(targetIndex, 0, moved);
+
+    if (!await ensureOnline()) return;
+    const results = await Promise.all(
+      reordered.map((p, position) => sb.from('note_pages').update({position}).eq('id', p.id))
+    );
+    const error = results.find(r => r.error)?.error;
+    if (error) {
+      toast(error.message || 'Reihenfolge konnte nicht gespeichert werden.', 'error');
+      return;
+    }
+
+    reordered.forEach((p, position) => {
+      const local = state.data.notePages.find(x => x.id === p.id);
+      if (local) local.position = position;
+    });
+    state.notes.pageId = id;
+    state.notes.sectionId = page.section_id;
+    state.notes.expandedInitialized = true;
+    if (!state.notes.expandedSectionIds.includes(page.section_id)) state.notes.expandedSectionIds.push(page.section_id);
+    saveSnapshot();
+    toast('Seitenreihenfolge gespeichert.');
+    render();
   }
 
   async function saveCurrentNote() {
@@ -1332,7 +1446,8 @@
 
     const content_html = sanitizeHtml(draft.contentHtml || '');
     const nextTitle = String(draft.title || '').trim() || 'Neue Seite';
-    const { error } = await sb.from('note_pages').update({title:nextTitle, content_html}).eq('id',pageId);
+    const title_html = sanitizeHtml(draft.titleHtml || esc(nextTitle));
+    const { error } = await sb.from('note_pages').update({title:nextTitle, title_html, content_html}).eq('id',pageId);
 
     if (error) {
       persistNoteDraft({...draft, dirty:true, updatedAt:Date.now()});
@@ -1343,9 +1458,9 @@
     }
 
     const local = state.data.notePages.find(p=>p.id===pageId);
-    if (local) { local.title = nextTitle; local.content_html = content_html; }
+    if (local) { local.title = nextTitle; local.title_html = title_html; local.content_html = content_html; }
     clearStoredNoteDraft(pageId);
-    state.notes.draft = {pageId, title:nextTitle, contentHtml:content_html, dirty:false, updatedAt:Date.now()};
+    state.notes.draft = {pageId, title:nextTitle, titleHtml:title_html, contentHtml:content_html, dirty:false, updatedAt:Date.now()};
     state.notes.saveState = `Gespeichert · ${new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})}`;
     saveSnapshot();
     const s = $('#note-save-state'); if (s) s.textContent = state.notes.saveState;
