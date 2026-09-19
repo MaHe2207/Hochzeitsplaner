@@ -35,7 +35,7 @@
       guestSearch: '',
       guestSort: 'name'
     },
-    notes: { sectionId: null, pageId: null, saveState: '', editing: false, expandedSectionIds: [] },
+    notes: { sectionId: null, pageId: null, saveState: '', editing: false, expandedSectionIds: [], draft: null },
     data: emptyData()
   };
 
@@ -57,6 +57,73 @@
   const shortDate = (v) => v ? new Intl.DateTimeFormat('de-DE', {day:'2-digit', month:'2-digit', year:'2-digit'}).format(new Date(`${v}T12:00:00`)) : 'ohne Termin';
   const euros = (cents = 0) => new Intl.NumberFormat('de-DE', {style:'currency', currency:'EUR'}).format(Number(cents || 0) / 100);
   const parseEuro = (v) => Math.max(0, Math.round(Number(String(v || 0).replace(',', '.')) * 100) || 0);
+
+  function noteDraftStorageKey(pageId) {
+    return wid() && pageId ? `wedding.noteDraft.${wid()}.${pageId}` : null;
+  }
+
+  function readStoredNoteDraft(pageId) {
+    const key = noteDraftStorageKey(pageId);
+    if (!key) return null;
+    try {
+      const draft = JSON.parse(localStorage.getItem(key) || 'null');
+      return draft && draft.pageId === pageId ? draft : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function persistNoteDraft(draft) {
+    if (!draft?.pageId) return;
+    state.notes.draft = draft;
+    const key = noteDraftStorageKey(draft.pageId);
+    if (!key) return;
+    try { localStorage.setItem(key, JSON.stringify(draft)); } catch (_) {}
+  }
+
+  function clearStoredNoteDraft(pageId) {
+    const key = noteDraftStorageKey(pageId);
+    if (key) { try { localStorage.removeItem(key); } catch (_) {} }
+    if (state.notes.draft?.pageId === pageId) state.notes.draft = null;
+  }
+
+  function beginNoteDraft(page) {
+    if (!page) return null;
+    const stored = readStoredNoteDraft(page.id);
+    const draft = stored?.dirty ? stored : {
+      pageId: page.id,
+      title: page.title || 'Neue Seite',
+      contentHtml: page.content_html || '',
+      dirty: false,
+      updatedAt: Date.now()
+    };
+    state.notes.draft = draft;
+    return draft;
+  }
+
+  function captureNoteDraftFromDom() {
+    const pageId = state.notes.pageId;
+    const editor = $('#note-editor');
+    const title = $('#note-title');
+    if (!pageId || !editor || !title) return state.notes.draft;
+    const draft = {
+      pageId,
+      title: title.value,
+      contentHtml: editor.innerHTML,
+      dirty: true,
+      updatedAt: Date.now()
+    };
+    persistNoteDraft(draft);
+    return draft;
+  }
+
+  function scheduleNoteSave(delay = 700) {
+    state.notes.saveState = 'Entwurf lokal gesichert · wird synchronisiert …';
+    const status = $('#note-save-state');
+    if (status) status.textContent = state.notes.saveState;
+    clearTimeout(state.noteSaveTimer);
+    state.noteSaveTimer = setTimeout(saveCurrentNote, delay);
+  }
 
   function sanitizeHtml(html = '') {
     const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html');
@@ -567,10 +634,13 @@
         <span>${d.noteSections.length ? 'Klappt ein Kapitel auf und tippt auf den Titel einer Seite.' : 'Legt zuerst ein Kapitel an.'}</span>
       </div>`;
     } else if (state.notes.editing) {
+      const draft = state.notes.draft?.pageId === page.id ? state.notes.draft : beginNoteDraft(page);
+      const draftTitle = draft?.title ?? page.title ?? 'Neue Seite';
+      const draftHtml = draft?.contentHtml ?? page.content_html ?? '';
       pageArea = `
         <section class="card note-editor-card">
           <div class="note-reader-head">
-            <input class="note-title-input" id="note-title" value="${attr(page.title)}" aria-label="Seitentitel" />
+            <input class="note-title-input" id="note-title" value="${attr(draftTitle)}" aria-label="Seitentitel" />
             <button class="icon-btn" data-action="finish-note-edit" title="Bearbeitung beenden"><i data-lucide="check"></i></button>
             <button class="icon-btn" data-action="delete-note-page" data-id="${page.id}" title="Seite löschen"><i data-lucide="trash-2"></i></button>
           </div>
@@ -586,7 +656,7 @@
             <input class="tool-color" type="color" data-editor-color value="#172019" title="Textfarbe" />
             <button class="tool-btn" data-command="removeFormat" title="Formatierung entfernen">Tx</button>
           </div>
-          <div class="note-editor" id="note-editor" contenteditable="true" spellcheck="true">${sanitizeHtml(page.content_html)}</div>
+          <div class="note-editor" id="note-editor" contenteditable="true" spellcheck="true">${sanitizeHtml(draftHtml)}</div>
           <div class="note-save-state" id="note-save-state">${esc(state.notes.saveState || 'Synchronisiert')}</div>
         </section>`;
     } else {
@@ -735,6 +805,10 @@
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
     }
+    window.addEventListener('pagehide', () => { if (state.notes.editing) captureNoteDraftFromDom(); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden' && state.notes.editing) captureNoteDraftFromDom();
+    });
     window.addEventListener('online', () => { state.online = true; toast('Wieder online – Daten werden synchronisiert.'); state.membership ? loadAllData(true) : render(); });
     window.addEventListener('offline', () => { state.online = false; render(); });
 
@@ -813,7 +887,9 @@
     state.data.notePages = queries[8].data || [];
     state.wedding = queries[9].data || state.wedding;
     saveSnapshot();
-    if (fromRealtime && state.currentTab === 'notes' && $('#note-editor') === document.activeElement) return;
+    // Während eine Notiz bearbeitet wird, darf Realtime die Oberfläche nicht neu
+    // rendern. Sonst kann noch nicht synchronisierter Text aus dem Editor verschwinden.
+    if (fromRealtime && state.currentTab === 'notes' && state.notes.editing) return;
     render();
   }
 
@@ -877,6 +953,8 @@
       e.preventDefault();
       document.execCommand(cmdBtn.dataset.command, false, null);
       $('#note-editor')?.focus();
+      captureNoteDraftFromDom();
+      scheduleNoteSave(500);
       return;
     }
 
@@ -979,14 +1057,22 @@
       }
       else if (action === 'edit-note-page') {
         state.notes.pageId = el.dataset.id || state.notes.pageId;
+        const editPage = state.data.notePages.find(p => p.id === state.notes.pageId);
+        beginNoteDraft(editPage);
         state.notes.editing = true;
-        state.notes.saveState = 'Bearbeitung geöffnet';
+        state.notes.saveState = state.notes.draft?.dirty ? 'Nicht gespeicherten Entwurf wiederhergestellt' : 'Bearbeitung geöffnet';
         render();
         setTimeout(() => $('#note-editor')?.focus(), 0);
       }
       else if (action === 'finish-note-edit') {
-        await saveCurrentNote();
+        captureNoteDraftFromDom();
+        const saved = await saveCurrentNote();
+        if (!saved) {
+          toast('Der Entwurf bleibt lokal erhalten. Bitte erst nach erfolgreicher Synchronisierung schließen.', 'error');
+          return;
+        }
         state.notes.editing = false;
+        state.notes.draft = null;
         render();
       }
       else if (action === 'insert-note-link') {
@@ -1003,10 +1089,8 @@
         url = url.trim();
         if (!/^(https?:|mailto:|tel:)/i.test(url)) url = `https://${url.replace(/^\/+/, '')}`;
         document.execCommand('createLink', false, url);
-        state.notes.saveState = 'Änderungen werden gespeichert …';
-        const status = $('#note-save-state'); if (status) status.textContent = state.notes.saveState;
-        clearTimeout(state.noteSaveTimer);
-        state.noteSaveTimer = setTimeout(saveCurrentNote, 500);
+        captureNoteDraftFromDom();
+        scheduleNoteSave(500);
       }
       else if (action === 'delete-note-page') await deleteNotePage(el.dataset.id);
       else if (action === 'delete-note-section') await deleteNoteSection(el.dataset.id);
@@ -1045,10 +1129,9 @@
       e.target._timer = setTimeout(render, 180);
     }
     if (e.target.id === 'note-editor' || e.target.id === 'note-title') {
-      state.notes.saveState = 'Änderungen werden gespeichert …';
-      const status = $('#note-save-state'); if (status) status.textContent = state.notes.saveState;
-      clearTimeout(state.noteSaveTimer);
-      state.noteSaveTimer = setTimeout(saveCurrentNote, 700);
+      // Sofort lokal sichern; der Server-Save bleibt bewusst entprellt.
+      captureNoteDraftFromDom();
+      scheduleNoteSave(700);
     }
   });
 
@@ -1056,13 +1139,13 @@
     if (e.target.id === 'guest-sort') { state.filters.guestSort = e.target.value; render(); }
     if (e.target.id === 'guest-household-filter') { state.filters.guestHousehold = e.target.value; render(); }
     if (e.target.matches('[data-editor-size]')) {
-      document.execCommand('fontSize', false, e.target.value); $('#note-editor')?.focus();
+      document.execCommand('fontSize', false, e.target.value); $('#note-editor')?.focus(); captureNoteDraftFromDom(); scheduleNoteSave(500);
     }
     if (e.target.matches('[data-editor-block]')) {
-      document.execCommand('formatBlock', false, e.target.value); $('#note-editor')?.focus();
+      document.execCommand('formatBlock', false, e.target.value); $('#note-editor')?.focus(); captureNoteDraftFromDom(); scheduleNoteSave(500);
     }
     if (e.target.matches('[data-editor-color]')) {
-      document.execCommand('foreColor', false, e.target.value); $('#note-editor')?.focus();
+      document.execCommand('foreColor', false, e.target.value); $('#note-editor')?.focus(); captureNoteDraftFromDom(); scheduleNoteSave(500);
     }
   });
 
@@ -1227,30 +1310,60 @@
 
   async function saveCurrentNote() {
     clearTimeout(state.noteSaveTimer);
+    state.noteSaveTimer = null;
+
     const pageId = state.notes.pageId;
-    const editor = $('#note-editor'); const title = $('#note-title');
-    if (!pageId || !editor || !title || !state.membership) return;
-    if (!navigator.onLine) { state.notes.saveState = 'Offline – nicht gespeichert'; const s=$('#note-save-state'); if(s)s.textContent=state.notes.saveState; return; }
-    const content_html = sanitizeHtml(editor.innerHTML);
-    const nextTitle = title.value.trim() || 'Neue Seite';
-    const { error } = await sb.from('note_pages').update({title:nextTitle, content_html}).eq('id',pageId);
-    if (error) { state.notes.saveState = 'Speichern fehlgeschlagen'; toast(error.message,'error'); }
-    else {
-      const local = state.data.notePages.find(p=>p.id===pageId); if (local) { local.title=nextTitle; local.content_html=content_html; }
-      state.notes.saveState = `Gespeichert · ${new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})}`;
-      saveSnapshot();
+    if (!pageId || !state.membership) return true;
+
+    // Falls der Editor noch vorhanden ist, zuerst den allerneuesten Stand lokal sichern.
+    const liveDraft = captureNoteDraftFromDom();
+    const draft = (liveDraft?.pageId === pageId ? liveDraft : null)
+      || (state.notes.draft?.pageId === pageId ? state.notes.draft : null)
+      || readStoredNoteDraft(pageId);
+
+    if (!draft) return true;
+
+    if (!navigator.onLine) {
+      persistNoteDraft({...draft, dirty:true, updatedAt:Date.now()});
+      state.notes.saveState = 'Offline · Entwurf lokal gesichert';
+      const s = $('#note-save-state'); if (s) s.textContent = state.notes.saveState;
+      return false;
     }
-    const s=$('#note-save-state'); if(s)s.textContent=state.notes.saveState;
+
+    const content_html = sanitizeHtml(draft.contentHtml || '');
+    const nextTitle = String(draft.title || '').trim() || 'Neue Seite';
+    const { error } = await sb.from('note_pages').update({title:nextTitle, content_html}).eq('id',pageId);
+
+    if (error) {
+      persistNoteDraft({...draft, dirty:true, updatedAt:Date.now()});
+      state.notes.saveState = 'Noch nicht synchronisiert · Entwurf lokal gesichert';
+      toast(error.message || 'Notiz konnte noch nicht synchronisiert werden.', 'error');
+      const s = $('#note-save-state'); if (s) s.textContent = state.notes.saveState;
+      return false;
+    }
+
+    const local = state.data.notePages.find(p=>p.id===pageId);
+    if (local) { local.title = nextTitle; local.content_html = content_html; }
+    clearStoredNoteDraft(pageId);
+    state.notes.draft = {pageId, title:nextTitle, contentHtml:content_html, dirty:false, updatedAt:Date.now()};
+    state.notes.saveState = `Gespeichert · ${new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})}`;
+    saveSnapshot();
+    const s = $('#note-save-state'); if (s) s.textContent = state.notes.saveState;
+    return true;
   }
 
   async function flushNoteSave() {
-    if (state.noteSaveTimer) { clearTimeout(state.noteSaveTimer); state.noteSaveTimer = null; await saveCurrentNote(); }
+    if (!state.notes.editing) return true;
+    captureNoteDraftFromDom();
+    clearTimeout(state.noteSaveTimer);
+    state.noteSaveTimer = null;
+    return await saveCurrentNote();
   }
 
   async function deleteNotePage(id) {
     if (!confirm('Diese Notizseite wirklich löschen?')) return;
     await mutate(sb.from('note_pages').delete().eq('id',id), 'Seite gelöscht');
-    if (state.notes.pageId===id) { state.notes.pageId=null; state.notes.editing=false; }
+    if (state.notes.pageId===id) { clearStoredNoteDraft(id); state.notes.pageId=null; state.notes.editing=false; state.notes.draft=null; }
     await loadAllData();
   }
 
