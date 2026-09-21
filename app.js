@@ -29,6 +29,8 @@
     filters: {
       todoStatus: 'all',
       budgetVendors: [],
+      budgetCategories: [],
+      budgetSubcategories: [],
       guestRsvp: 'all',
       guestTags: [],
       guestHousehold: 'all',
@@ -36,6 +38,7 @@
       guestSort: 'name'
     },
     notes: { sectionId: null, pageId: null, saveState: '', editing: false, expandedSectionIds: [], expandedInitialized: false, draft: null },
+    budget: { collapsedCategories: [], collapsedSubcategories: [] },
     data: emptyData()
   };
 
@@ -429,15 +432,41 @@
   function budgetView() {
     const allItems = state.data.budgetItems;
     const selectedVendors = Array.isArray(state.filters.budgetVendors) ? state.filters.budgetVendors : [];
+    const selectedCategories = Array.isArray(state.filters.budgetCategories) ? state.filters.budgetCategories : [];
+    const selectedSubcategories = Array.isArray(state.filters.budgetSubcategories) ? state.filters.budgetSubcategories : [];
+    const collapsedCategories = Array.isArray(state.budget?.collapsedCategories) ? state.budget.collapsedCategories : [];
+    const collapsedSubcategories = Array.isArray(state.budget?.collapsedSubcategories) ? state.budget.collapsedSubcategories : [];
 
-    // Anbieter werden ohne Beachtung von Groß-/Kleinschreibung zusammengefasst.
-    // Leere Anbieter bleiben als eigener Filter „Ohne Anbieter“ auswählbar.
+    const norm = (value) => String(value || '').trim().toLocaleLowerCase('de-DE');
+    const categoryKeyOf = (item) => norm(item.category || 'Sonstiges') || '__other__';
+    const subcategoryKeyOf = (item) => norm(item.subcategory || '') || '__none__';
+    const vendorKeyOf = (item) => norm(item.vendor || '') || '__none__';
+    const compositeSubKey = (item) => `${categoryKeyOf(item)}::${subcategoryKeyOf(item)}`;
+
+    // Filteroptionen immer aus allen Budgeteinträgen bilden. So verschwinden
+    // Optionen nicht, nur weil gerade ein anderer Filter aktiv ist.
     const vendorMap = new Map();
+    const categoryMap = new Map();
+    const subcategoryMap = new Map();
     allItems.forEach(item => {
-      const label = String(item.vendor || '').trim();
-      const key = label ? label.toLocaleLowerCase('de-DE') : '__none__';
-      if (!vendorMap.has(key)) vendorMap.set(key, label || 'Ohne Anbieter');
+      const vendorKey = vendorKeyOf(item);
+      const vendorLabel = String(item.vendor || '').trim() || 'Ohne Anbieter';
+      if (!vendorMap.has(vendorKey)) vendorMap.set(vendorKey, vendorLabel);
+
+      const categoryKey = categoryKeyOf(item);
+      const categoryLabel = String(item.category || '').trim() || 'Sonstiges';
+      if (!categoryMap.has(categoryKey)) categoryMap.set(categoryKey, categoryLabel);
+
+      const subKey = compositeSubKey(item);
+      const subLabel = String(item.subcategory || '').trim() || 'Ohne Unterkategorie';
+      if (!subcategoryMap.has(subKey)) subcategoryMap.set(subKey, {
+        key: subKey,
+        label: subLabel,
+        categoryKey,
+        categoryLabel
+      });
     });
+
     const vendors = [...vendorMap.entries()]
       .map(([key, label]) => ({key, label}))
       .sort((a,b) => {
@@ -446,62 +475,115 @@
         return a.label.localeCompare(b.label, 'de');
       });
 
-    // Mehrere Anbieter funktionieren als ODER-Verknüpfung:
-    // Ein Kostenpunkt wird angezeigt, sobald sein Anbieter ausgewählt ist.
-    const items = selectedVendors.length === 0
-      ? allItems
-      : allItems.filter(item => {
-          const label = String(item.vendor || '').trim();
-          const key = label ? label.toLocaleLowerCase('de-DE') : '__none__';
-          return selectedVendors.includes(key);
-        });
+    const categories = [...categoryMap.entries()]
+      .map(([key, label]) => ({key, label}))
+      .sort((a,b) => a.label.localeCompare(b.label, 'de'));
 
-    const selectedLabels = vendors
-      .filter(v => selectedVendors.includes(v.key))
-      .map(v => v.label);
-    const isFiltered = selectedVendors.length > 0;
+    const subcategories = [...subcategoryMap.values()]
+      .sort((a,b) => a.categoryLabel.localeCompare(b.categoryLabel, 'de') || a.label.localeCompare(b.label, 'de'));
+
+    // Innerhalb jeder Filtergruppe gilt ODER. Zwischen den Gruppen gilt UND.
+    // Beispiel: Anbieter A ODER B + Kategorie Location = passende Location-Kosten
+    // von Anbieter A oder Anbieter B.
+    const items = allItems.filter(item => {
+      const vendorOk = selectedVendors.length === 0 || selectedVendors.includes(vendorKeyOf(item));
+      const categoryOk = selectedCategories.length === 0 || selectedCategories.includes(categoryKeyOf(item));
+      const subcategoryOk = selectedSubcategories.length === 0 || selectedSubcategories.includes(compositeSubKey(item));
+      return vendorOk && categoryOk && subcategoryOk;
+    });
+
+    const isFiltered = selectedVendors.length > 0 || selectedCategories.length > 0 || selectedSubcategories.length > 0;
     const planned = items.reduce((s,b)=>s+Number(b.planned_cents||0),0);
     const actual = items.reduce((s,b)=>s+Number(b.actual_cents||0),0);
     const paid = items.reduce((s,b)=>s+Number(b.paid_cents||0),0);
     const pct = planned ? Math.min(100, Math.round(actual/planned*100)) : 0;
-    const categories = [...new Set(items.map(i=>i.category))].sort((a,b)=>a.localeCompare(b,'de'));
+
+    const groupCategories = [...new Set(items.map(categoryKeyOf))]
+      .map(key => ({key, label: categoryMap.get(key) || 'Sonstiges'}))
+      .sort((a,b)=>a.label.localeCompare(b.label,'de'));
+
+    const renderCategory = (category) => {
+      const categoryItems = items.filter(item => categoryKeyOf(item) === category.key);
+      const categoryActual = categoryItems.reduce((sum,item)=>sum+Number(item.actual_cents||0),0);
+      const categoryCollapsed = collapsedCategories.includes(category.key);
+      const subKeys = [...new Set(categoryItems.map(subcategoryKeyOf))];
+      const subGroups = subKeys
+        .map(subKey => ({
+          subKey,
+          key: `${category.key}::${subKey}`,
+          label: subKey === '__none__' ? 'Ohne Unterkategorie' : String(categoryItems.find(item => subcategoryKeyOf(item) === subKey)?.subcategory || '').trim()
+        }))
+        .sort((a,b) => {
+          if (a.subKey === '__none__') return 1;
+          if (b.subKey === '__none__') return -1;
+          return a.label.localeCompare(b.label,'de');
+        });
+
+      return `
+        <section class="card card-pad mt-12" style="padding-bottom:${categoryCollapsed?'12px':'16px'}">
+          <button class="section-heading" data-action="toggle-budget-category" data-value="${attr(category.key)}" style="width:100%;border:0;background:transparent;padding:0;text-align:left;margin:0">
+            <span class="flex items-center gap-8" style="min-width:0"><i data-lucide="${categoryCollapsed?'chevron-right':'chevron-down'}"></i><h2 style="overflow:hidden;text-overflow:ellipsis">${esc(category.label)}</h2></span>
+            <small>${euros(categoryActual)} · ${categoryItems.length}</small>
+          </button>
+          ${categoryCollapsed ? '' : `<div class="mt-12">${subGroups.map(sub => {
+            const subItems = categoryItems.filter(item => subcategoryKeyOf(item) === sub.subKey);
+            const subActual = subItems.reduce((sum,item)=>sum+Number(item.actual_cents||0),0);
+            const subCollapsed = collapsedSubcategories.includes(sub.key);
+            return `
+              <div style="margin-top:10px;margin-left:8px">
+                <button data-action="toggle-budget-subcategory" data-value="${attr(sub.key)}" style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;border:0;background:var(--green-100);padding:10px 12px;border-radius:12px;text-align:left;color:var(--ink)">
+                  <span class="flex items-center gap-8" style="min-width:0"><i data-lucide="${subCollapsed?'chevron-right':'chevron-down'}" style="width:18px"></i><strong style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(sub.label)}</strong></span>
+                  <small class="muted" style="white-space:nowrap">${euros(subActual)} · ${subItems.length}</small>
+                </button>
+                ${subCollapsed ? '' : `<div class="list mt-8">${subItems.map(budgetRow).join('')}</div>`}
+              </div>`;
+          }).join('')}</div>`}
+        </section>`;
+    };
 
     return `
       <h1 class="page-title">Budget</h1>
       <p class="page-subtitle">Soll, tatsächliche Kosten und bereits bezahlte Beträge bleiben für euch beide aktuell.</p>
-      <div class="flex gap-8" style="flex-wrap:wrap;align-items:center">
-        <button class="btn btn-primary" data-action="new-budget"><i data-lucide="plus"></i> Kostenpunkt</button>
-      </div>
+      <button class="btn btn-primary" data-action="new-budget"><i data-lucide="plus"></i> Kostenpunkt</button>
 
       <div class="section-heading"><h2>Anbieter filtern</h2><small>Mehrfachauswahl · ODER</small></div>
       <div class="chips">
         <button class="chip ${selectedVendors.length===0?'active':''}" data-action="budget-vendor-filter" data-value="all">Alle Anbieter</button>
-        ${vendors.map(v=>`<button class="chip ${selectedVendors.includes(v.key)?'active':''}" data-action="budget-vendor-filter" data-value="${attr(v.key)}" aria-pressed="${selectedVendors.includes(v.key)?'true':'false'}">${esc(v.label)}</button>`).join('')}
+        ${vendors.map(v=>`<button class="chip ${selectedVendors.includes(v.key)?'active':''}" data-action="budget-vendor-filter" data-value="${attr(v.key)}">${esc(v.label)}</button>`).join('')}
+      </div>
+
+      <div class="section-heading"><h2>Kategorien filtern</h2><small>Mehrfachauswahl · ODER</small></div>
+      <div class="chips">
+        <button class="chip ${selectedCategories.length===0?'active':''}" data-action="budget-category-filter" data-value="all">Alle Kategorien</button>
+        ${categories.map(c=>`<button class="chip ${selectedCategories.includes(c.key)?'active':''}" data-action="budget-category-filter" data-value="${attr(c.key)}">${esc(c.label)}</button>`).join('')}
+      </div>
+
+      <div class="section-heading"><h2>Unterkategorien filtern</h2><small>Mehrfachauswahl · ODER</small></div>
+      <div class="chips">
+        <button class="chip ${selectedSubcategories.length===0?'active':''}" data-action="budget-subcategory-filter" data-value="all">Alle Unterkategorien</button>
+        ${subcategories.map(sc=>`<button class="chip ${selectedSubcategories.includes(sc.key)?'active':''}" data-action="budget-subcategory-filter" data-value="${attr(sc.key)}" title="${attr(sc.categoryLabel)}">${esc(sc.categoryLabel)} › ${esc(sc.label)}</button>`).join('')}
       </div>
 
       <p class="muted mt-12" style="font-size:12px">
-        ${isFiltered
-          ? `${items.length} Kostenpunkt${items.length===1?'':'e'} · ${selectedLabels.map(esc).join(' oder ')}`
-          : `${items.length} Kostenpunkt${items.length===1?'':'e'} insgesamt`}
+        ${items.length} Kostenpunkt${items.length===1?'':'e'}${isFiltered?' nach aktueller Filterauswahl':' insgesamt'}
       </p>
+
       <div class="budget-summary mt-16">
         <div class="card budget-kpi"><small>Geplant${isFiltered?' · gefiltert':''}</small><b>${euros(planned)}</b></div>
         <div class="card budget-kpi"><small>Tatsächlich${isFiltered?' · gefiltert':''}</small><b>${euros(actual)}</b></div>
         <div class="card budget-kpi"><small>Bezahlt${isFiltered?' · gefiltert':''}</small><b>${euros(paid)}</b></div>
       </div>
       <div class="card card-pad mt-12"><div class="flex justify-between gap-12"><span class="muted">Budget-Nutzung${isFiltered?' (Filter)':''}</span><strong>${pct}%</strong></div><div class="progress-track mt-8"><div class="progress-bar" style="width:${pct}%"></div></div></div>
-      ${categories.map(cat => {
-        const list = items.filter(i=>i.category===cat);
-        return `<div class="section-heading"><h2>${esc(cat)}</h2><small>${euros(list.reduce((s,b)=>s+Number(b.actual_cents||0),0))}</small></div><div class="list">${list.map(budgetRow).join('')}</div>`;
-      }).join('')}
-      ${!items.length ? `<div class="empty-state card mt-16"><i data-lucide="wallet-cards"></i><strong>${allItems.length ? 'Keine Kostenpunkte für diese Auswahl' : 'Noch keine Kosten eingetragen'}</strong><span>${allItems.length ? 'Wähle andere Anbieter oder „Alle Anbieter“.' : 'Legt den ersten Kostenpunkt für Location, Ringe, Floristik oder etwas ganz Eigenes an.'}</span></div>` : ''}`;
+
+      ${groupCategories.map(renderCategory).join('')}
+      ${!items.length ? `<div class="empty-state card mt-16"><i data-lucide="wallet-cards"></i><strong>${allItems.length ? 'Keine Kostenpunkte für diese Filter' : 'Noch keine Kosten eingetragen'}</strong><span>${allItems.length ? 'Passe Anbieter, Kategorien oder Unterkategorien an.' : 'Legt den ersten Kostenpunkt für Location, Ringe, Floristik oder etwas ganz Eigenes an.'}</span></div>` : ''}`;
   }
 
   function budgetRow(b) {
-    const sub = [b.vendor, b.due_date ? `fällig ${shortDate(b.due_date)}` : ''].filter(Boolean).join(' · ');
+    const meta = [b.vendor, b.due_date ? `fällig ${shortDate(b.due_date)}` : ''].filter(Boolean).join(' · ');
     return `<button class="list-row clickable" style="width:100%;text-align:left" data-action="edit-budget" data-id="${b.id}">
       <span class="stat-icon"><i data-lucide="receipt-text"></i></span>
-      <span class="row-main"><strong>${esc(b.title)}</strong><small>${esc(sub || b.category)}</small></span>
+      <span class="row-main"><strong>${esc(b.title)}</strong><small>${esc(meta || b.subcategory || b.category)}</small></span>
       <span style="text-align:right"><strong class="money">${euros(b.actual_cents)}</strong><small class="muted" style="display:block">von ${euros(b.planned_cents)}</small></span>
     </button>`;
   }
@@ -763,9 +845,15 @@
 
     if (type === 'budget') {
       const b = p.id ? state.data.budgetItems.find(x=>x.id===p.id) : null;
+      const existingCategories = [...new Set(state.data.budgetItems.map(x => String(x.category || '').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'de'));
+      const existingSubcategories = [...new Set(state.data.budgetItems.map(x => String(x.subcategory || '').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'de'));
       title = b ? 'Kostenpunkt bearbeiten' : 'Neuer Kostenpunkt';
       body = `<form data-form="save-budget" data-id="${b?.id || ''}">
-        <div class="form-grid"><div class="field"><label>Titel</label><input class="input" name="title" required value="${attr(b?.title || '')}" /></div><div class="field"><label>Kategorie</label><input class="input" name="category" required value="${attr(b?.category || 'Sonstiges')}" list="budget-cats" /><datalist id="budget-cats"><option>Location</option><option>Catering</option><option>Floristik</option><option>Foto & Video</option><option>Musik</option><option>Kleidung</option><option>Ringe</option><option>Papeterie</option><option>Dekoration</option><option>Transport</option></datalist></div></div>
+        <div class="field"><label>Titel</label><input class="input" name="title" required value="${attr(b?.title || '')}" /></div>
+        <div class="form-grid">
+          <div class="field"><label>Kategorie</label><input class="input" name="category" required value="${attr(b?.category || 'Sonstiges')}" list="budget-cats" placeholder="z. B. Location" /><datalist id="budget-cats">${existingCategories.map(c=>`<option value="${attr(c)}"></option>`).join('')}<option value="Location"></option><option value="Catering"></option><option value="Floristik"></option><option value="Foto & Video"></option><option value="Musik"></option><option value="Kleidung"></option><option value="Ringe"></option><option value="Papeterie"></option><option value="Dekoration"></option><option value="Transport"></option></datalist></div>
+          <div class="field"><label>Unterkategorie</label><input class="input" name="subcategory" value="${attr(b?.subcategory || '')}" list="budget-subcats" placeholder="z. B. Getränke, Blumenstrauß …" /><datalist id="budget-subcats">${existingSubcategories.map(c=>`<option value="${attr(c)}"></option>`).join('')}</datalist></div>
+        </div>
         <div class="field"><label>Dienstleister / Anbieter</label><input class="input" name="vendor" value="${attr(b?.vendor || '')}" /></div>
         <div class="form-grid"><div class="field"><label>Geplant (€)</label><input class="input" inputmode="decimal" name="planned" value="${attr(((b?.planned_cents||0)/100).toFixed(2).replace('.',','))}" /></div><div class="field"><label>Tatsächlich (€)</label><input class="input" inputmode="decimal" name="actual" value="${attr(((b?.actual_cents||0)/100).toFixed(2).replace('.',','))}" /></div><div class="field"><label>Bezahlt (€)</label><input class="input" inputmode="decimal" name="paid" value="${attr(((b?.paid_cents||0)/100).toFixed(2).replace('.',','))}" /></div><div class="field"><label>Fällig am</label><input class="input" type="date" name="due_date" value="${attr(b?.due_date || '')}" /></div></div>
         <div class="field"><label>Notizen</label><textarea class="textarea" name="notes">${esc(b?.notes || '')}</textarea></div>
@@ -1063,6 +1151,46 @@
         }
         render();
       }
+      else if (action === 'budget-category-filter') {
+        const value = el.dataset.value;
+        if (value === 'all') {
+          state.filters.budgetCategories = [];
+        } else {
+          const selected = Array.isArray(state.filters.budgetCategories) ? [...state.filters.budgetCategories] : [];
+          const index = selected.indexOf(value);
+          if (index >= 0) selected.splice(index, 1); else selected.push(value);
+          state.filters.budgetCategories = selected;
+        }
+        render();
+      }
+      else if (action === 'budget-subcategory-filter') {
+        const value = el.dataset.value;
+        if (value === 'all') {
+          state.filters.budgetSubcategories = [];
+        } else {
+          const selected = Array.isArray(state.filters.budgetSubcategories) ? [...state.filters.budgetSubcategories] : [];
+          const index = selected.indexOf(value);
+          if (index >= 0) selected.splice(index, 1); else selected.push(value);
+          state.filters.budgetSubcategories = selected;
+        }
+        render();
+      }
+      else if (action === 'toggle-budget-category') {
+        const value = el.dataset.value;
+        const collapsed = Array.isArray(state.budget.collapsedCategories) ? [...state.budget.collapsedCategories] : [];
+        const index = collapsed.indexOf(value);
+        if (index >= 0) collapsed.splice(index, 1); else collapsed.push(value);
+        state.budget.collapsedCategories = collapsed;
+        render();
+      }
+      else if (action === 'toggle-budget-subcategory') {
+        const value = el.dataset.value;
+        const collapsed = Array.isArray(state.budget.collapsedSubcategories) ? [...state.budget.collapsedSubcategories] : [];
+        const index = collapsed.indexOf(value);
+        if (index >= 0) collapsed.splice(index, 1); else collapsed.push(value);
+        state.budget.collapsedSubcategories = collapsed;
+        render();
+      }
       else if (action === 'duplicate-budget') await duplicateBudget(el.dataset.id);
       else if (action === 'delete-budget') await deleteRow('budget_items', el.dataset.id, 'Kostenpunkt gelöscht');
       else if (action === 'new-guest') openModal('guest');
@@ -1308,6 +1436,7 @@
       wedding_id: wid(),
       title: `${original.title} (Kopie)`,
       category: original.category || 'Sonstiges',
+      subcategory: original.subcategory || '',
       vendor: original.vendor || '',
       planned_cents: Number(original.planned_cents || 0),
       actual_cents: Number(original.actual_cents || 0),
@@ -1329,7 +1458,7 @@
 
   async function saveBudget(id, fd) {
     const payload = {
-      wedding_id:wid(), title:String(fd.get('title')||'').trim(), category:String(fd.get('category')||'Sonstiges').trim(), vendor:String(fd.get('vendor')||'').trim(),
+      wedding_id:wid(), title:String(fd.get('title')||'').trim(), category:String(fd.get('category')||'Sonstiges').trim(), subcategory:String(fd.get('subcategory')||'').trim(), vendor:String(fd.get('vendor')||'').trim(),
       planned_cents:parseEuro(fd.get('planned')), actual_cents:parseEuro(fd.get('actual')), paid_cents:parseEuro(fd.get('paid')),
       due_date:fd.get('due_date') || null, notes:String(fd.get('notes')||'')
     };
