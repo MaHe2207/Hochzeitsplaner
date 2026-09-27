@@ -877,7 +877,31 @@
 
     if (type === 'tags') {
       title = 'Gäste-Tags';
-      body = `<form data-form="add-tag"><div class="form-grid"><div class="field"><label>Neuer Tag</label><input class="input" name="name" required placeholder="z. B. Familie, Freunde, Kinder" /></div><div class="field"><label>Farbe</label><input class="input" type="color" name="color" value="#dfe9e2" style="height:48px;padding:5px" /></div></div><button class="btn btn-primary btn-sm" type="submit"><i data-lucide="plus"></i> Tag anlegen</button></form><div class="list mt-16">${state.data.guestTags.map(t=>`<div class="list-row"><span class="avatar" style="background:${esc(t.color)}">#</span><span class="row-main"><strong>${esc(t.name)}</strong><small>${state.data.guestTagLinks.filter(l=>l.tag_id===t.id).length} Gäste-Einträge</small></span><button class="icon-btn" data-action="delete-tag" data-id="${t.id}"><i data-lucide="trash-2"></i></button></div>`).join('')}</div>`;
+      body = `<form data-form="add-tag"><div class="form-grid"><div class="field"><label>Neuer Tag</label><input class="input" name="name" required placeholder="z. B. Familie, Freunde, Kinder" /></div><div class="field"><label>Farbe</label><input class="input" type="color" name="color" value="#dfe9e2" style="height:48px;padding:5px" /></div></div><button class="btn btn-primary btn-sm" type="submit"><i data-lucide="plus"></i> Tag anlegen</button></form>
+      <div class="list mt-16">${state.data.guestTags.map(t=>`<div class="list-row">
+        <span class="avatar" style="background:${esc(t.color)}">#</span>
+        <button class="row-main" style="border:0;background:transparent;text-align:left;padding:0;cursor:pointer" data-action="edit-tag" data-id="${t.id}">
+          <strong>${esc(t.name)}</strong>
+          <small>${state.data.guestTagLinks.filter(l=>l.tag_id===t.id).length} Gäste-Einträge · Antippen zum Bearbeiten</small>
+        </button>
+        <div class="row-actions">
+          <button class="icon-btn" data-action="edit-tag" data-id="${t.id}" aria-label="Tag bearbeiten"><i data-lucide="pencil"></i></button>
+          <button class="icon-btn" data-action="delete-tag" data-id="${t.id}" aria-label="Tag löschen"><i data-lucide="trash-2"></i></button>
+        </div>
+      </div>`).join('')}</div>`;
+    }
+
+    if (type === 'tag-edit') {
+      const t = state.data.guestTags.find(x => x.id === p.id);
+      title = 'Tag bearbeiten';
+      body = t ? `<form data-form="save-tag" data-id="${t.id}">
+        <div class="field"><label>Name</label><input class="input" name="name" required value="${attr(t.name)}" /></div>
+        <div class="field"><label>Farbe</label><input class="input" type="color" name="color" value="${attr(t.color || '#dfe9e2')}" style="height:52px;padding:5px" /></div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" data-action="manage-tags"><i data-lucide="arrow-left"></i> Zurück</button>
+          <button class="btn btn-primary" type="submit"><i data-lucide="save"></i> Änderungen speichern</button>
+        </div>
+      </form>` : `<div class="notice danger">Der Tag wurde nicht gefunden.</div>`;
     }
 
     if (type === 'note-section') {
@@ -1211,6 +1235,7 @@
         render();
       }
       else if (action === 'manage-tags') openModal('tags');
+      else if (action === 'edit-tag') openModal('tag-edit', {id:el.dataset.id});
       else if (action === 'delete-tag') {
         state.filters.guestTags = (state.filters.guestTags || []).filter(id => id !== el.dataset.id);
         await deleteRow('guest_tags', el.dataset.id, 'Tag gelöscht', false);
@@ -1312,6 +1337,7 @@
       else if (kind === 'save-budget') await saveBudget(form.dataset.id, fd);
       else if (kind === 'save-guest') await saveGuest(form.dataset.id, fd);
       else if (kind === 'add-tag') await addTag(fd);
+      else if (kind === 'save-tag') await saveTag(form.dataset.id, fd);
       else if (kind === 'save-note-section') await saveNoteSection(form.dataset.id, fd);
       else if (kind === 'save-settings') await saveSettings(fd);
     } catch (err) {
@@ -1490,6 +1516,22 @@
     const color = String(fd.get('color')||'#dfe9e2');
     await mutate(sb.from('guest_tags').insert({wedding_id:wid(), name, color}), 'Tag angelegt');
     await loadAllData(); state.modal='tags'; render();
+  }
+
+  async function saveTag(id, fd) {
+    const tag = state.data.guestTags.find(t => t.id === id);
+    if (!tag) return;
+    const name = String(fd.get('name') || '').trim();
+    const color = String(fd.get('color') || '#dfe9e2');
+    if (!name) {
+      toast('Bitte einen Namen für den Tag eingeben.', 'error');
+      return;
+    }
+    await mutate(sb.from('guest_tags').update({name, color}).eq('id', id).eq('wedding_id', wid()), 'Tag gespeichert');
+    await loadAllData();
+    state.modal = 'tags';
+    state.modalPayload = null;
+    render();
   }
 
   async function saveNoteSection(id, fd) {
