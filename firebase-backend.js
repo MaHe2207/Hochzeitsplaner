@@ -32,6 +32,8 @@ const firebaseApp = initializeApp(cfg);
 const auth = getAuth(firebaseApp);
 const db = getFirestore(firebaseApp);
 
+const MIGRATED_WEDDING_ID = "1a6a4177-e4b5-4e78-9a28-93188db7924f";
+
 const TABLES = {
   wedding_members: "members",
   todo_sections: "todoSections",
@@ -259,19 +261,29 @@ class QueryBuilder {
       return this.result(rows);
     }
 
-    // Membership lookup after login: collectionGroup + user_id constraint.
+    // Membership lookup after login.
+    // Für diese Migration kennen wir die eine gemeinsame Hochzeit bereits.
+    // Direkter Dokumentzugriff ist robuster als eine collectionGroup-Abfrage
+    // und vermeidet Probleme mit Query-Regeln/Indizes.
     if (this.table === "wedding_members" && !this.filterValue("wedding_id")) {
       const userId = this.filterValue("user_id");
       if (!userId) return { data: null, error: { message: "Mitgliedschaftsabfrage benötigt user_id." } };
 
-      const snaps = await getDocs(query(collectionGroup(db, "members"), where("user_id", "==", userId)));
-      const rows = snaps.docs.map(d => {
-        const weddingId = d.ref.parent.parent?.id || d.data().wedding_id;
-        return { id: d.id, wedding_id: weddingId, ...d.data() };
-      }).filter(r => this.matches(r, r.id));
+      const memberRef = doc(db, "weddings", MIGRATED_WEDDING_ID, "members", userId);
+      const snap = await getDoc(memberRef);
 
-      if (rows[0]?.wedding_id) this.client.activeWeddingId = rows[0].wedding_id;
-      return this.result(rows);
+      if (!snap.exists()) return this.result([]);
+
+      const row = {
+        id: snap.id,
+        wedding_id: MIGRATED_WEDDING_ID,
+        ...snap.data()
+      };
+
+      if (!this.matches(row, row.id)) return this.result([]);
+
+      this.client.activeWeddingId = MIGRATED_WEDDING_ID;
+      return this.result([row]);
     }
 
     const weddingId = this.weddingIdFromContext();
