@@ -1,7 +1,13 @@
-// Diese Datei darf bei einer statischen PWA öffentlich sein: Der Supabase ANON KEY ist
-// ein öffentlicher Browser-Schlüssel. Die Sicherheit kommt aus den RLS-Regeln in schema.sql.
-// NIEMALS den service_role-Key hier eintragen.
+// Firebase-Web-Konfiguration für den Hochzeitsplaner.
+// Diese Web-Konfiguration darf in einer statischen Web-App öffentlich sein.
+// Niemals Service-Account-Schlüssel oder private Admin-Schlüssel hier eintragen.
 window.APP_CONFIG = {
-  SUPABASE_URL: "https://qejeazprvsrbmnudbker.supabase.co",
-  SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFlamVhenBydnNyYm1udWRia2VyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk2MDM2NDAsImV4cCI6MjEwNTE3OTY0MH0.tfz3D_gmrx6m2Ac6dYVxAuuNMy-2ODryPXBR9yQlSLc"
+  FIREBASE_CONFIG: {
+    apiKey: "AIzaSyBHL0tnnJ4rg3s-QeQpeY-OrT9IdxJAcX0",
+    authDomain: "hochzeitsplaner-cebc0.firebaseapp.com",
+    projectId: "hochzeitsplaner-cebc0",
+    storageBucket: "hochzeitsplaner-cebc0.firebasestorage.app",
+    messagingSenderId: "1075127916513",
+    appId: "1:1075127916513:web:6f4598ed7a338cc03fa4a0"
+  }
 };

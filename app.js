@@ -1,5 +1,5 @@
 /* Gemeinsam – Hochzeitsplaner PWA
- * Statische, mobile-first App mit Supabase Auth/DB/Realtime.
+ * Firebase-Version mit Authentication, Cloud Firestore und Realtime-Synchronisation.
  */
 
 (() => {
@@ -7,8 +7,8 @@
 
   const app = document.getElementById('app');
   const cfg = window.APP_CONFIG || {};
-  const configured = cfg.SUPABASE_URL && cfg.SUPABASE_ANON_KEY && !cfg.SUPABASE_URL.includes('DEIN-PROJEKT') && !cfg.SUPABASE_ANON_KEY.includes('DEIN_');
-  const sb = configured && window.supabase ? window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY) : null;
+  const configured = Boolean(cfg.FIREBASE_CONFIG?.projectId && window.supabase);
+  const sb = configured && window.supabase ? window.supabase.createClient() : null;
 
   const state = {
     session: null,
@@ -250,75 +250,39 @@
       <main class="auth-wrap">
         <section class="auth-card card">
           <div class="auth-logo"><div class="hearts">♡♡</div><h1>Gemeinsam</h1><em>für immer</em></div>
-          <div class="notice warning"><i data-lucide="settings"></i><div><strong>Supabase noch nicht konfiguriert</strong><br><span>Trage Projekt-URL und anon/public Key in <code>config.js</code> ein und führe <code>supabase/schema.sql</code> im SQL Editor aus.</span></div></div>
-          <p class="muted">Alle weiteren Schritte stehen in der README.md des Projekts.</p>
+          <div class="notice warning"><i data-lucide="settings"></i><div><strong>Firebase noch nicht konfiguriert</strong><br><span>Die Firebase-Web-Konfiguration fehlt in <code>firebase-test-config.js</code>.</span></div></div>
         </section>
       </main>`;
     refreshIcons();
   }
 
   function authScreen() {
-    const signup = state.authMode === 'signup';
     app.innerHTML = `
       <main class="auth-wrap">
         <section class="auth-card card">
           <div class="auth-logo"><div class="hearts">♡♡</div><h1>Gemeinsam</h1><em>für immer</em></div>
-          <div class="auth-tabs">
-            <button class="auth-tab ${!signup?'active':''}" data-action="auth-mode" data-mode="login">Anmelden</button>
-            <button class="auth-tab ${signup?'active':''}" data-action="auth-mode" data-mode="signup">Registrieren</button>
-          </div>
-          <p class="page-subtitle">Eure Planung, eure Notizen und alle Entscheidungen an einem gemeinsamen Ort.</p>
+          <p class="page-subtitle">Melde dich mit deinem Hochzeitsplaner-Konto an.</p>
           <form data-form="auth">
-            ${signup ? `<div class="field"><label>Euer Anzeigename</label><input class="input" name="display_name" autocomplete="name" required placeholder="z. B. Anna" /></div>` : ''}
             <div class="field"><label>E-Mail</label><input class="input" type="email" name="email" autocomplete="email" required placeholder="name@beispiel.de" /></div>
-            <div class="field"><label>Passwort</label><input class="input" type="password" name="password" autocomplete="${signup?'new-password':'current-password'}" minlength="6" required placeholder="Mindestens 6 Zeichen" /></div>
-            <button class="btn btn-primary btn-block" type="submit">${signup ? 'Konto erstellen' : 'Anmelden'}</button>
+            <div class="field"><label>Passwort</label><input class="input" type="password" name="password" autocomplete="current-password" minlength="6" required /></div>
+            <button class="btn btn-primary btn-block" type="submit">Anmelden</button>
           </form>
-          <div class="divider">gemeinsam planen</div>
-          <p class="muted" style="text-align:center;font-size:12px">Die zweite Person erhält nach der Registrierung euren Einladungscode und hat anschließend dieselben Bearbeitungsrechte.</p>
+          <div class="divider">Gemeinsam planen</div>
+          <p class="muted" style="text-align:center;font-size:12px">Die Daten werden sicher zwischen euren beiden Konten synchronisiert.</p>
         </section>
       </main>`;
     refreshIcons();
   }
 
   function onboardingScreen() {
-    const pendingName = localStorage.getItem('wedding.pendingName') || state.user?.email?.split('@')[0] || '';
-    if (!state.onboardingMode) {
-      app.innerHTML = `
-        <main class="auth-wrap">
-          <section class="auth-card card">
-            <div class="auth-logo"><div class="hearts">♡♡</div><h1>Hallo!</h1><em>Wie möchtet ihr starten?</em></div>
-            <div class="onboarding-choice">
-              <button class="choice-card" data-action="onboarding-mode" data-mode="create"><i data-lucide="heart-handshake"></i><strong>Hochzeit anlegen</strong><small>Erstellt euren gemeinsamen Planungsbereich und ladet eure Partnerperson per Code ein.</small></button>
-              <button class="choice-card" data-action="onboarding-mode" data-mode="join"><i data-lucide="key-round"></i><strong>Mit Code beitreten</strong><small>Ihr habt bereits einen Einladungscode? Dann verbindet dieses Konto mit derselben Hochzeit.</small></button>
-            </div>
-            <button class="btn btn-ghost btn-block mt-16" data-action="logout"><i data-lucide="log-out"></i> Abmelden</button>
-          </section>
-        </main>`;
-    } else if (state.onboardingMode === 'create') {
-      app.innerHTML = `
-        <main class="auth-wrap"><section class="auth-card card">
-          <button class="btn btn-ghost btn-sm" data-action="onboarding-back"><i data-lucide="arrow-left"></i> Zurück</button>
-          <div class="section-heading"><h2>Eure Hochzeit</h2></div>
-          <form data-form="create-wedding">
-            <div class="field"><label>Dein Anzeigename</label><input class="input" name="display_name" required value="${attr(pendingName)}" /></div>
-            <div class="field"><label>Name der Hochzeit</label><input class="input" name="name" required value="Unsere Hochzeit" /></div>
-            <div class="field"><label>Hochzeitsdatum</label><input class="input" type="date" name="wedding_date" /></div>
-            <button class="btn btn-primary btn-block" type="submit">Gemeinsamen Bereich erstellen</button>
-          </form>
-        </section></main>`;
-    } else {
-      app.innerHTML = `
-        <main class="auth-wrap"><section class="auth-card card">
-          <button class="btn btn-ghost btn-sm" data-action="onboarding-back"><i data-lucide="arrow-left"></i> Zurück</button>
-          <div class="section-heading"><h2>Einladung annehmen</h2></div>
-          <form data-form="join-wedding">
-            <div class="field"><label>Dein Anzeigename</label><input class="input" name="display_name" required value="${attr(pendingName)}" /></div>
-            <div class="field"><label>Einladungscode</label><input class="input" name="code" required maxlength="12" autocapitalize="characters" placeholder="z. B. A1B2C3D4" style="text-transform:uppercase;letter-spacing:.12em" /></div>
-            <button class="btn btn-primary btn-block" type="submit">Beitreten</button>
-          </form>
-        </section></main>`;
-    }
+    app.innerHTML = `
+      <main class="auth-wrap">
+        <section class="auth-card card">
+          <div class="auth-logo"><div class="hearts">♡♡</div><h1>Kein Zugriff</h1><em>Gemeinsam</em></div>
+          <div class="notice warning"><i data-lucide="user-x"></i><div><strong>Dieses Konto ist keiner Hochzeit zugeordnet.</strong><br><span>Bitte melde dich mit einem der beiden eingerichteten Konten an.</span></div></div>
+          <button class="btn btn-ghost btn-block mt-16" data-action="logout"><i data-lucide="log-out"></i> Abmelden</button>
+        </section>
+      </main>`;
     refreshIcons();
   }
 
@@ -385,9 +349,8 @@
 
       <div class="section-heading"><h2>Gemeinsam planen</h2><small>${state.members.length} Mitglied${state.members.length===1?'':'er'}</small></div>
       <div class="card card-pad">
-        <p class="mb-0"><strong>Einladungscode</strong></p>
-        <p class="muted">Teilt diesen Code nur miteinander. Die zweite Person kann damit denselben Planungsbereich öffnen.</p>
-        <div class="invite-code"><code>${esc(state.wedding?.invite_code || '')}</code><button class="btn btn-secondary btn-sm" data-action="copy-invite"><i data-lucide="copy"></i> Kopieren</button></div>
+        <p class="mb-0"><strong>Firebase-Synchronisation aktiv</strong></p>
+        <p class="muted mb-0">Marcel und Sarah sind bereits mit diesem gemeinsamen Planungsbereich verbunden. Änderungen werden über Cloud Firestore synchronisiert.</p>
       </div>`;
   }
 
@@ -1382,22 +1345,11 @@
   async function submitAuth(fd) {
     const email = String(fd.get('email') || '').trim();
     const password = String(fd.get('password') || '');
-    if (state.authMode === 'signup') {
-      const displayName = String(fd.get('display_name') || '').trim();
-      localStorage.setItem('wedding.pendingName', displayName);
-      const { data, error } = await sb.auth.signUp({email, password, options:{data:{display_name:displayName}}});
-      if (error) throw error;
-      if (!data.session) {
-        toast('Konto erstellt. Bitte bestätige jetzt die E-Mail und melde dich danach an.');
-        state.authMode = 'login'; render();
-      } else {
-        state.session = data.session; state.user = data.user; await bootstrapUser();
-      }
-    } else {
-      const { data, error } = await sb.auth.signInWithPassword({email, password});
-      if (error) throw error;
-      state.session = data.session; state.user = data.user; await bootstrapUser();
-    }
+    const { data, error } = await sb.auth.signInWithPassword({email, password});
+    if (error) throw error;
+    state.session = data.session;
+    state.user = data.user;
+    await bootstrapUser();
   }
 
   async function createWedding(fd) {

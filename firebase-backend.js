@@ -10,15 +10,12 @@ import {
 import {
   getFirestore,
   collection,
-  collectionGroup,
   doc,
   getDoc,
   getDocs,
   setDoc,
   updateDoc,
   deleteDoc,
-  query,
-  where,
   onSnapshot,
   writeBatch
 } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-firestore.js";
@@ -593,5 +590,5 @@ window.supabase = {
   }
 };
 
-// Load the existing app only after Firebase and the adapter are ready.
-await import("./app-firebase-test.js");
+// App erst laden, wenn Firebase und die Datenbank-Anbindung bereit sind.
+await import("./app.js");
