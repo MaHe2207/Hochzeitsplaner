@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>Hochzeitsplaner – Firebase Import v3</title>
+  <style>
+    :root { color-scheme: light; --green:#355a46; --bg:#f6f3ea; --card:#fffdf7; --border:#d9d3c5; --danger:#9b2c2c; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:#262b27; }
+    main { max-width:720px; margin:0 auto; padding:24px 16px 48px; }
+    h1 { color:var(--green); margin:0 0 8px; font-size:1.7rem; }
+    h2 { font-size:1.1rem; margin:22px 0 10px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:16px; margin:14px 0; }
+    .warning { border-left:5px solid #b7791f; }
+    label { display:block; font-weight:650; margin:12px 0 5px; }
+    input { width:100%; padding:12px; border:1px solid #bdb8aa; border-radius:10px; font-size:16px; background:white; }
+    button { width:100%; border:0; border-radius:12px; padding:13px 16px; margin-top:16px; font-weight:700; font-size:16px; background:var(--green); color:white; }
+    button:disabled { opacity:.45; }
+    .muted { color:#656b66; font-size:.92rem; }
+    .ok { color:#24623d; font-weight:700; }
+    .error { color:var(--danger); font-weight:700; white-space:pre-wrap; }
+    pre { white-space:pre-wrap; overflow-wrap:anywhere; background:#f0ede4; padding:12px; border-radius:10px; font-size:.88rem; }
+    ul { padding-left:20px; }
+    .counts { display:grid; grid-template-columns:1fr auto; gap:6px 12px; }
+    .counts div:nth-child(even) { font-variant-numeric:tabular-nums; text-align:right; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Firebase-Migration – Schritt 4 (v3)</h1>
+  <p>Diese Seite kopiert den vorhandenen JSON-Export nach Cloud Firestore. Supabase wird dabei nicht verändert.</p>
+
+  <div class="card warning">
+    <strong>Wichtig</strong>
+    <ul>
+      <li>Diese HTML-Datei darf auf GitHub liegen.</li>
+      <li>Die Datei <strong>hochzeitsplan-2026-10-21.json</strong> NICHT auf GitHub hochladen.</li>
+      <li>Der Import funktioniert nur, wenn du dich mit Marcels Firebase-Konto anmeldest.</li>
+      <li>Bei einem Fehler kannst du den Import gefahrlos erneut starten. Es werden feste Dokument-IDs verwendet.</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>1. JSON auswählen</h2>
+    <input id="jsonFile" type="file" accept=".json,application/json">
+    <div id="validation" class="muted" style="margin-top:12px">Noch keine Datei ausgewählt.</div>
+  </div>
+
+  <div class="card">
+    <h2>2. Mit Marcel anmelden</h2>
+    <label for="email">Firebase-E-Mail</label>
+    <input id="email" type="email" autocomplete="username" placeholder="E-Mail von Marcels Firebase-Konto">
+    <label for="password">Firebase-Passwort</label>
+    <input id="password" type="password" autocomplete="current-password" placeholder="Passwort">
+    <p class="muted">Das Passwort wird nur direkt an Firebase Authentication gesendet und nicht in der Datei gespeichert.</p>
+    <button id="importBtn" disabled>Prüfen, anmelden und importieren</button>
+  </div>
+
+  <div class="card">
+    <h2>Status</h2>
+    <pre id="log">Bereit.</pre>
+  </div>
+</main>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-app.js";
+  import {
+    getAuth, signInWithEmailAndPassword, signOut, setPersistence, inMemoryPersistence
+  } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-auth.js";
+  import {
+    getFirestore, doc, collection, getDoc, getDocs, setDoc, writeBatch
+  } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyBHL0tnnJ4rg3s-QeQpeY-OrT9IdxJAcX0",
+    authDomain: "hochzeitsplaner-cebc0.firebaseapp.com",
+    projectId: "hochzeitsplaner-cebc0",
+    storageBucket: "hochzeitsplaner-cebc0.firebasestorage.app",
+    messagingSenderId: "1075127916513",
+    appId: "1:1075127916513:web:6f4598ed7a338cc03fa4a0"
+  };
+
+  const EXPECTED_WEDDING_ID = "1a6a4177-e4b5-4e78-9a28-93188db7924f";
+
+  const OLD_MARCEL = "1abc8a22-2db6-4c91-9980-6988c2c29b5c";
+  const OLD_SARAH  = "7c4cc1d3-ed52-4063-ada6-b1b4c05f0530";
+
+  const NEW_MARCEL = "VCoHT8PWeJfo91NFXeoQwm0r6KC3";
+  const NEW_SARAH  = "nQwQWz2fNwVAhyGH2NLI29RW7iF2";
+
+  const COLLECTIONS = [
+    ["todoSections", "todoSections"],
+    ["todos", "todos"],
+    ["budgetItems", "budgetItems"],
+    ["guests", "guests"],
+    ["guestTags", "guestTags"],
+    ["guestTagLinks", "guestTagLinks"],
+    ["noteSections", "noteSections"],
+    ["notePages", "notePages"]
+  ];
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+  await setPersistence(auth, inMemoryPersistence);
+
+  const fileEl = document.getElementById("jsonFile");
+  const emailEl = document.getElementById("email");
+  const passwordEl = document.getElementById("password");
+  const importBtn = document.getElementById("importBtn");
+  const validationEl = document.getElementById("validation");
+  const logEl = document.getElementById("log");
+
+  let source = null;
+
+  function log(message) {
+    logEl.textContent += "\n" + message;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function fail(message) {
+    throw new Error(message);
+  }
+
+  function mapUserId(value) {
+    if (value == null || value === "") return value;
+    if (value === OLD_MARCEL) return NEW_MARCEL;
+    if (value === OLD_SARAH) return NEW_SARAH;
+    fail("Unbekannte alte Benutzer-ID gefunden: " + value);
+  }
+
+  function linkDocId(link) {
+    return `${link.guest_id}__${link.tag_id}`;
+  }
+
+  function validateExport(data) {
+    if (!data || typeof data !== "object") fail("Ungültige JSON-Datei.");
+    if (data?.wedding?.id !== EXPECTED_WEDDING_ID) {
+      fail("Diese Datei gehört nicht zur erwarteten Hochzeit.");
+    }
+    if (!data.data || typeof data.data !== "object") fail("Der Datenbereich fehlt.");
+
+    for (const [sourceKey] of COLLECTIONS) {
+      if (!Array.isArray(data.data[sourceKey])) fail(`Datenbereich "${sourceKey}" fehlt.`);
+    }
+
+    const idsToCheck = ["todoSections","todos","budgetItems","guests","guestTags","noteSections","notePages"];
+    for (const key of idsToCheck) {
+      const ids = data.data[key].map(x => x.id);
+      if (ids.some(id => !id)) fail(`Mindestens ein Eintrag in "${key}" hat keine ID.`);
+      if (new Set(ids).size !== ids.length) fail(`Doppelte IDs in "${key}".`);
+    }
+
+    for (const todo of data.data.todos) {
+      if (todo.assignee_id != null && ![OLD_MARCEL, OLD_SARAH].includes(todo.assignee_id)) {
+        fail("Eine Aufgabe enthält eine unbekannte Benutzer-ID: " + todo.assignee_id);
+      }
+    }
+
+    for (const link of data.data.guestTagLinks) {
+      if (!link.guest_id || !link.tag_id) fail("Ungültige Gast-Tag-Zuordnung.");
+    }
+
+    return true;
+  }
+
+  function showCounts(data) {
+    const rows = COLLECTIONS.map(([key, label]) => `<div>${label}</div><div>${data.data[key].length}</div>`).join("");
+    validationEl.innerHTML =
+      `<div class="ok">JSON geprüft – Hochzeit stimmt.</div>
+       <div class="counts" style="margin-top:10px">${rows}</div>
+       <p class="muted">Export: ${data.exported_at || "ohne Zeitstempel"}</p>`;
+  }
+
+  fileEl.addEventListener("change", async () => {
+    importBtn.disabled = true;
+    source = null;
+    validationEl.textContent = "Prüfe Datei …";
+    try {
+      const file = fileEl.files?.[0];
+      if (!file) return;
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      validateExport(parsed);
+      source = parsed;
+      showCounts(parsed);
+      importBtn.disabled = false;
+    } catch (err) {
+      validationEl.innerHTML = `<span class="error">${String(err.message || err)}</span>`;
+    }
+  });
+
+  async function ensureWeddingAndMembers(data, uid) {
+    if (uid !== NEW_MARCEL) {
+      fail("Import darf nur mit Marcels Firebase-Konto ausgeführt werden.");
+    }
+
+    const weddingRef = doc(db, "weddings", EXPECTED_WEDDING_ID);
+
+    const weddingData = {
+      ...data.wedding,
+      created_by: NEW_MARCEL,
+      legacy_created_by: data.wedding.created_by || OLD_MARCEL,
+      migration_source: "supabase-json",
+      migration_exported_at: data.exported_at || null,
+      firebase_migrated_at: new Date().toISOString()
+    };
+
+    const marcelSource = (data.members || []).find(m => m.display_name === "Marcel") || {};
+    const sarahSource  = (data.members || []).find(m => m.display_name === "Sarah") || {};
+
+    /*
+      Bootstrap-Reihenfolge:
+      1. Hochzeit direkt anlegen (ohne vorheriges getDoc auf ein noch nicht existentes Dokument).
+      2. Marcels Mitgliedschaft direkt anlegen.
+      3. Ab dann darf Marcel gemäß den Security Rules lesen/aktualisieren.
+    */
+    log("• Lege Hochzeit an bzw. bestätige sie …");
+
+    try {
+      await setDoc(weddingRef, weddingData);
+    } catch (err) {
+      // Falls ein vorheriger Import die Hochzeit bereits angelegt hat, darf Marcel sie
+      // über created_by lesen. Danach wird die Mitgliedschaft vervollständigt.
+      if (err?.code !== "permission-denied") throw err;
+
+      const existingWedding = await getDoc(weddingRef);
+      if (!existingWedding.exists()) throw err;
+      if (existingWedding.data().created_by !== NEW_MARCEL) {
+        fail("Die vorhandene Hochzeit gehört nicht zu Marcels Firebase-Konto.");
+      }
+      log("• Hochzeit existiert bereits – Bootstrap wird fortgesetzt.");
+    }
+
+    const marcelRef = doc(db, "weddings", EXPECTED_WEDDING_ID, "members", NEW_MARCEL);
+    log("• Lege Marcel als Besitzer an bzw. bestätige ihn …");
+
+    try {
+      await setDoc(marcelRef, {
+        wedding_id: EXPECTED_WEDDING_ID,
+        user_id: NEW_MARCEL,
+        display_name: marcelSource.display_name || "Marcel",
+        role: "owner",
+        joined_at: marcelSource.joined_at || null,
+        legacy_user_id: OLD_MARCEL
+      });
+    } catch (err) {
+      // Wenn Marcels Mitgliedschaft bereits existiert, darf er sie selbst aktualisieren.
+      if (err?.code !== "permission-denied") throw err;
+
+      const existingMarcel = await getDoc(marcelRef);
+      if (!existingMarcel.exists()) throw err;
+      log("• Marcel ist bereits Mitglied.");
+    }
+
+    // Ab jetzt greifen die normalen Mitgliedsregeln.
+    await setDoc(weddingRef, weddingData, { merge: true });
+
+    const sarahRef = doc(db, "weddings", EXPECTED_WEDDING_ID, "members", NEW_SARAH);
+    const sarahExisting = await getDoc(sarahRef);
+
+    if (!sarahExisting.exists()) {
+      log("• Lege Sarah als Mitglied an …");
+      await setDoc(sarahRef, {
+        wedding_id: EXPECTED_WEDDING_ID,
+        user_id: NEW_SARAH,
+        display_name: sarahSource.display_name || "Sarah",
+        role: "member",
+        joined_at: sarahSource.joined_at || null,
+        legacy_user_id: OLD_SARAH
+      });
+    } else {
+      log("• Sarah ist bereits Mitglied.");
+    }
+  }
+
+  function transformedRecord(key, item) {
+    const copy = structuredClone(item);
+
+    // Die Wedding-ID bleibt absichtlich identisch.
+    copy.wedding_id = EXPECTED_WEDDING_ID;
+
+    if (key === "todos") {
+      copy.assignee_id = mapUserId(copy.assignee_id);
+    }
+
+    return copy;
+  }
+
+  async function importCollection(sourceKey, targetName, items) {
+    log(`• Importiere ${targetName}: ${items.length} Einträge …`);
+    const batch = writeBatch(db);
+
+    for (const item of items) {
+      const record = transformedRecord(sourceKey, item);
+      let id = item.id;
+
+      if (sourceKey === "guestTagLinks") {
+        id = linkDocId(item);
+      }
+      if (!id) fail(`Dokument-ID für ${sourceKey} fehlt.`);
+
+      const ref = doc(db, "weddings", EXPECTED_WEDDING_ID, targetName, id);
+      batch.set(ref, record);
+    }
+
+    await batch.commit();
+  }
+
+  async function verify(data) {
+    log("• Prüfe importierte Daten …");
+    const problems = [];
+
+    const weddingSnap = await getDoc(doc(db, "weddings", EXPECTED_WEDDING_ID));
+    if (!weddingSnap.exists()) problems.push("Hochzeit fehlt.");
+    else if (weddingSnap.data().created_by !== NEW_MARCEL) problems.push("created_by ist nicht Marcels Firebase-UID.");
+
+    for (const uid of [NEW_MARCEL, NEW_SARAH]) {
+      const snap = await getDoc(doc(db, "weddings", EXPECTED_WEDDING_ID, "members", uid));
+      if (!snap.exists()) problems.push(`Mitglied ${uid} fehlt.`);
+    }
+
+    for (const [sourceKey, targetName] of COLLECTIONS) {
+      const snap = await getDocs(collection(db, "weddings", EXPECTED_WEDDING_ID, targetName));
+      const expected = data.data[sourceKey].length;
+      if (snap.size !== expected) {
+        problems.push(`${targetName}: erwartet ${expected}, gefunden ${snap.size}.`);
+      }
+
+      if (sourceKey === "todos") {
+        for (const d of snap.docs) {
+          const a = d.data().assignee_id;
+          if (a != null && ![NEW_MARCEL, NEW_SARAH].includes(a)) {
+            problems.push(`Aufgabe ${d.id}: alte oder unbekannte assignee_id.`);
+          }
+        }
+      }
+    }
+
+    if (problems.length) fail("Verifikation fehlgeschlagen:\n- " + problems.join("\n- "));
+    return true;
+  }
+
+  importBtn.addEventListener("click", async () => {
+    if (!source) return;
+    importBtn.disabled = true;
+    logEl.textContent = "Starte Import …";
+
+    try {
+      validateExport(source);
+
+      const email = emailEl.value.trim();
+      const password = passwordEl.value;
+      if (!email || !password) fail("E-Mail und Passwort fehlen.");
+
+      log("• Melde bei Firebase an …");
+      const credential = await signInWithEmailAndPassword(auth, email, password);
+      passwordEl.value = "";
+
+      if (credential.user.uid !== NEW_MARCEL) {
+        await signOut(auth);
+        fail("Du bist nicht mit Marcels Firebase-Konto angemeldet. Import abgebrochen.");
+      }
+
+      log("• Marcel erfolgreich authentifiziert.");
+
+      await ensureWeddingAndMembers(source, credential.user.uid);
+
+      for (const [sourceKey, targetName] of COLLECTIONS) {
+        await importCollection(sourceKey, targetName, source.data[sourceKey]);
+      }
+
+      await verify(source);
+
+      log("");
+      log("✅ IMPORT ERFOLGREICH");
+      log("Alle erwarteten Dokumentzahlen stimmen und die Aufgaben-Zuständigkeiten wurden auf die Firebase-UIDs umgestellt.");
+      log("Supabase wurde nicht verändert.");
+      log("Du kannst diese Importseite jetzt schließen.");
+      await signOut(auth);
+    } catch (err) {
+      console.error(err);
+      log("");
+      log("❌ FEHLER");
+      log(String(err?.message || err));
+      log("");
+      log("Supabase wurde nicht verändert. Die Importseite kann nach Behebung des Fehlers erneut gestartet werden.");
+      try { await signOut(auth); } catch {}
+      importBtn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
